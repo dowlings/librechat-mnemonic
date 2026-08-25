@@ -55,6 +55,15 @@ const baseConfig: AppConfig = {
     enabled: true,
     path: '/mcp',
   },
+  cache: {
+    noteBodyTtlMs: 300_000,
+    recallTtlMs: 120_000,
+    settingsTtlMs: 30_000,
+  },
+  telemetry: {
+    enabled: false,
+    baseUrl: 'https://cloud.langfuse.com',
+  },
 };
 
 const context = {
@@ -112,7 +121,15 @@ function createMockMnemonic(opts: {
       }
 
       if (tool === 'get') {
-        return { structured: { action: 'get', notes: [] } as GetResponse, text: '' };
+        const ids = args.ids as string[];
+        const notes = ids.map((id) => ({
+          id,
+          title: `Note ${id}`,
+          content: `Content for ${id}`,
+          tags: [],
+          lifecycle: 'permanent',
+        }));
+        return { structured: { action: 'get', notes } as GetResponse, text: '' };
       }
 
       return { structured: undefined, text: '' };
@@ -368,5 +385,74 @@ describe('MemoryService.save — dedupe behaviour', () => {
     expect(rememberCall).toBeDefined();
     expect(rememberCall!.args.lifecycle).toBe('temporary');
     expect(rememberCall!.args.role).toBe('plan');
+  });
+});
+
+// ── Cache behaviour tests ───────────────────────────────────────────────────
+
+describe('MemoryService.recall — cache behaviour', () => {
+  it('caches recall results and avoids a second mnemonic round-trip', async () => {
+    const mnemonic = createMockMnemonic({
+      recallResults: [makeResult('note-1', 'Test note', 0.9)],
+    });
+    const store = createMockStore();
+    const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+    // First call hits mnemonic
+    const first = await service.recall(context, 'test query');
+    expect(first).toHaveLength(1);
+    const recallCallsAfterFirst = mnemonic.calls.filter((c) => c.tool === 'recall').length;
+    expect(recallCallsAfterFirst).toBe(1);
+
+    // Second call with the same query should hit the cache
+    const second = await service.recall(context, 'test query');
+    expect(second).toHaveLength(1);
+    const recallCallsAfterSecond = mnemonic.calls.filter((c) => c.tool === 'recall').length;
+    expect(recallCallsAfterSecond).toBe(1); // no new recall call
+  });
+
+  it('caches note bodies and avoids repeated get calls', async () => {
+    const mnemonic = createMockMnemonic({
+      recallResults: [makeResult('note-1', 'Test note', 0.9)],
+    });
+    const store = createMockStore();
+    const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+    // First recall fetches bodies via get
+    await service.recall(context, 'query one');
+    const getCallsAfterFirst = mnemonic.calls.filter((c) => c.tool === 'get').length;
+    expect(getCallsAfterFirst).toBe(1);
+
+    // A different query that returns the same note should not need another get
+    // (the recall itself misses the cache, but the body is already cached)
+    mnemonic.calls.length = 0; // reset call log
+    // Use a different mock that returns the same note
+    const mnemonic2 = createMockMnemonic({
+      recallResults: [makeResult('note-1', 'Test note', 0.9)],
+    });
+    const service2 = new MemoryService(baseConfig, mnemonic2 as never, store as never);
+    // Manually seed the body cache by calling getNotes
+    await service.getNotes(['note-1'], context);
+    const getCalls = mnemonic.calls.filter((c) => c.tool === 'get').length;
+    expect(getCalls).toBe(1);
+
+    // Now call getNotes again — should be fully cached
+    await service.getNotes(['note-1'], context);
+    const getCallsSecond = mnemonic.calls.filter((c) => c.tool === 'get').length;
+    expect(getCallsSecond).toBe(1); // no new get call
+  });
+
+  it('reports cache stats', async () => {
+    const mnemonic = createMockMnemonic({
+      recallResults: [makeResult('note-1', 'Test note', 0.9)],
+    });
+    const store = createMockStore();
+    const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+    await service.recall(context, 'test query');
+    await service.recall(context, 'test query'); // cache hit
+
+    const stats = service.cacheStats;
+    expect(stats.recall.hits).toBeGreaterThanOrEqual(1);
   });
 });
