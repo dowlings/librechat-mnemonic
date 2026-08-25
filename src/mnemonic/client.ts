@@ -10,9 +10,12 @@ import { logger } from '../logger.js';
  *
  * Two things matter here beyond "call the tool":
  *
- * 1. Writes are serialised. mnemonic commits to a git repo on every mutation,
- *    and concurrent writers race on `.git/index.lock`. One in-flight call at a
- *    time is cheap insurance and mnemonic is fast enough that it does not hurt.
+ * 1. Writes are serialised against each other. mnemonic commits to a git repo
+ *    on every mutation, and concurrent writers race on `.git/index.lock`. One
+ *    in-flight write at a time is cheap insurance. Reads get their own queue
+ *    so a slow write from turn N does not block recall on turn N+1 — the
+ *    original single-queue design made every recall pay for the previous
+ *    turn's detached write.
  * 2. The connection is lazy and self-healing. A crashed stdio child or a
  *    dropped HTTP session reconnects on the next call rather than wedging the
  *    proxy.
@@ -20,7 +23,8 @@ import { logger } from '../logger.js';
 export class MnemonicClient {
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
-  private queue: Promise<unknown> = Promise.resolve();
+  private readQueue: Promise<unknown> = Promise.resolve();
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   /**
    * Same reasoning as the mongo breaker: a missing binary or an unreachable
@@ -28,6 +32,9 @@ export class MnemonicClient {
    */
   private breakerOpenUntil = 0;
   private static readonly BREAKER_COOLDOWN_MS = 15_000;
+
+  /** Tools that mutate the vault and must not run concurrently. */
+  private static readonly WRITE_TOOLS = new Set(['remember', 'forget', 'update']);
 
   constructor(private readonly config: AppConfig) {}
 
@@ -108,14 +115,22 @@ export class MnemonicClient {
     }
   }
 
-  /** Run `fn` after every previously queued call has settled. */
-  private serialise<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn);
-    // Keep the chain alive regardless of individual failures.
-    this.queue = run.then(
+  /**
+   * Run `fn` after every previously queued call on the same queue has settled.
+   * Reads and writes have separate queues so they never block each other.
+   */
+  private serialise<T>(fn: () => Promise<T>, isWrite: boolean): Promise<T> {
+    const queue = isWrite ? this.writeQueue : this.readQueue;
+    const run = queue.then(fn, fn);
+    const next = run.then(
       () => undefined,
       () => undefined,
     );
+    if (isWrite) {
+      this.writeQueue = next;
+    } else {
+      this.readQueue = next;
+    }
     return run;
   }
 
@@ -131,6 +146,7 @@ export class MnemonicClient {
     tool: string,
     args: Record<string, unknown>,
   ): Promise<MnemonicResult<T>> {
+    const isWrite = MnemonicClient.WRITE_TOOLS.has(tool);
     return this.serialise(async () => {
       const client = await this.connect();
       const result = await client.callTool({ name: tool, arguments: args }, undefined, {
@@ -143,7 +159,7 @@ export class MnemonicClient {
       }
 
       return { structured: result.structuredContent as T | undefined, text };
-    });
+    }, isWrite);
   }
 
   async close(): Promise<void> {
