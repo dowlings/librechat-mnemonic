@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config.js';
+import { TtlCache } from '../cache.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MnemonicClient } from '../mnemonic/client.js';
@@ -34,11 +35,17 @@ export interface RecalledMemory extends RecallResultItem {
  *   MNEMONIC_RECALL_SCOPE=project for hard isolation.
  */
 export class MemoryService {
+  private readonly noteBodyCache: TtlCache<string, NoteBody>;
+  private readonly recallCache: TtlCache<string, RecalledMemory[]>;
+
   constructor(
     private readonly config: AppConfig,
     private readonly mnemonic: MnemonicClient,
     private readonly store: LibreChatStore,
-  ) {}
+  ) {
+    this.noteBodyCache = new TtlCache<string, NoteBody>(config.cache.noteBodyTtlMs);
+    this.recallCache = new TtlCache<string, RecalledMemory[]>(config.cache.recallTtlMs);
+  }
 
   /** Resolve the project context for a chat turn. */
   async resolveContext(
@@ -78,6 +85,14 @@ export class MemoryService {
     const scope = overrides.scope ?? this.config.mnemonic.recallScope;
     const limit = overrides.limit ?? this.config.mnemonic.recallLimit;
 
+    // Check recall cache — retries and edits produce the same query.
+    const cacheKey = `${context.conversationId ?? 'none'}:${scope}:${limit}:${hashString(query)}`;
+    const cached = this.recallCache.get(cacheKey);
+    if (cached) {
+      logger.debug({ cacheKey, count: cached.length }, 'recall cache hit');
+      return cached;
+    }
+
     const args: Record<string, unknown> = {
       query,
       limit,
@@ -104,22 +119,49 @@ export class MemoryService {
     const bodies = await this.getNotes(ids, context);
     const byId = new Map(bodies.map((note) => [note.id, note]));
 
-    return results.map((result) => ({
+    const hydrated = results.map((result) => ({
       ...result,
       content: byId.get(result.id)?.content ?? '',
     }));
+
+    this.recallCache.set(cacheKey, hydrated);
+    return hydrated;
   }
 
   async getNotes(ids: string[], context: MemoryContext): Promise<NoteBody[]> {
     if (ids.length === 0) return [];
-    const args: Record<string, unknown> = { ids };
+
+    // Try to satisfy from cache first.
+    const cached: NoteBody[] = [];
+    const missing: string[] = [];
+    for (const id of ids) {
+      const hit = this.noteBodyCache.get(id);
+      if (hit) cached.push(hit);
+      else missing.push(id);
+    }
+
+    if (missing.length === 0) {
+      logger.debug({ requested: ids.length, cached: cached.length }, 'note body cache full hit');
+      return cached;
+    }
+
+    // Fetch only the missing ones.
+    const args: Record<string, unknown> = { ids: missing };
     if (context.cwd) args.cwd = context.cwd;
     try {
       const result = await this.mnemonic.call<GetResponse>('get', args);
-      return result.structured?.notes ?? [];
+      const fetched = result.structured?.notes ?? [];
+      for (const note of fetched) {
+        this.noteBodyCache.set(note.id, note);
+      }
+      logger.debug(
+        { requested: ids.length, cached: cached.length, fetched: fetched.length },
+        'note body cache partial',
+      );
+      return [...cached, ...fetched];
     } catch (error) {
       logger.error({ err: error }, 'get failed');
-      return [];
+      return cached;
     }
   }
 
@@ -189,6 +231,8 @@ export class MemoryService {
         { id: structured?.id, project: context.projectName ?? '(none)', title: candidate.title },
         'memory saved',
       );
+      // Invalidate recall cache for this conversation — a new note changes results.
+      this.invalidateRecallCache(context.conversationId);
       return { saved: true, id: structured?.id };
     } catch (error) {
       logger.error({ err: error, title: candidate.title }, 'remember failed');
@@ -225,6 +269,8 @@ export class MemoryService {
     if (context.cwd) args.cwd = context.cwd;
     try {
       await this.mnemonic.call('forget', args);
+      this.noteBodyCache.delete(id);
+      this.invalidateRecallCache(context.conversationId);
       return true;
     } catch (error) {
       logger.error({ err: error, id }, 'forget failed');
@@ -241,6 +287,8 @@ export class MemoryService {
     if (context.cwd) args.cwd = context.cwd;
     try {
       await this.mnemonic.call('update', args);
+      this.noteBodyCache.delete(id);
+      this.invalidateRecallCache(context.conversationId);
       return true;
     } catch (error) {
       logger.error({ err: error, id }, 'update failed');
@@ -258,6 +306,23 @@ export class MemoryService {
     const result = await this.mnemonic.call('list', args);
     return result.structured ?? result.text;
   }
+
+  /** Invalidate all recall cache entries for a conversation. */
+  invalidateRecallCache(conversationId: string | null): void {
+    if (!conversationId) return;
+    // Simple approach: clear the whole recall cache. It's small and the
+    // common case is one conversation per write. A prefix scan would be
+    // more precise but adds complexity for negligible gain.
+    this.recallCache.clear();
+  }
+
+  /** Expose cache stats for monitoring/logging. */
+  get cacheStats() {
+    return {
+      noteBody: this.noteBodyCache.stats,
+      recall: this.recallCache.stats,
+    };
+  }
 }
 
 function dedupeTags(tags: string[]): string[] {
@@ -266,4 +331,14 @@ function dedupeTags(tags: string[]): string[] {
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
+}
+
+function hashString(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    const char = value.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0;
+  }
+  return hash.toString(36);
 }
