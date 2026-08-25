@@ -44,6 +44,18 @@ export class TtlCache<K, V> {
     this.store.delete(key);
   }
 
+  /** Delete all keys whose string representation starts with `prefix`. Returns count deleted. */
+  deleteByPrefix(prefix: string): number {
+    let deleted = 0;
+    for (const key of this.store.keys()) {
+      if (String(key).startsWith(prefix)) {
+        this.store.delete(key);
+        deleted++;
+      }
+    }
+    return deleted;
+  }
+
   clear(): void {
     this.store.clear();
   }
