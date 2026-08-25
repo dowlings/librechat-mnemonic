@@ -42,11 +42,24 @@ services:
       MNEMONIC_WRITE_SCOPE: global
       MNEMONIC_RECALL_SCOPE: all
 
+      # ── Caching ───────────────────────────────────────────────────────────
+      # Tune these if you need more or less freshness. Defaults are aggressive.
+      CACHE_NOTE_BODY_TTL_MS: "300000"
+      CACHE_RECALL_TTL_MS: "120000"
+      CACHE_SETTINGS_TTL_MS: "30000"
+
       # A small, cheap model does the extraction. Omit to reuse the chat's own
       # model, which works but costs more.
       EXTRACT_BASE_URL: https://api.openai.com/v1
       EXTRACT_MODEL: gpt-4o-mini
       EXTRACT_API_KEY: ${OPENAI_API_KEY}
+
+      # ── Telemetry ─────────────────────────────────────────────────────────
+      # Share these with LibreChat's own Langfuse config so traces correlate
+      # by sessionId (conversationId). Store in 1Password or your secret manager.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
 
       LOG_LEVEL: info
     volumes:
