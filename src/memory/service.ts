@@ -86,6 +86,7 @@ export class MemoryService {
     const limit = overrides.limit ?? this.config.mnemonic.recallLimit;
 
     // Check recall cache — retries and edits produce the same query.
+    // Key is prefixed with conversationId so invalidation can be scoped.
     const cacheKey = `${context.conversationId ?? 'none'}:${scope}:${limit}:${hashString(query)}`;
     const cached = this.recallCache.get(cacheKey);
     if (cached) {
@@ -307,13 +308,12 @@ export class MemoryService {
     return result.structured ?? result.text;
   }
 
-  /** Invalidate all recall cache entries for a conversation. */
+  /** Invalidate recall cache entries for a specific conversation only. */
   invalidateRecallCache(conversationId: string | null): void {
     if (!conversationId) return;
-    // Simple approach: clear the whole recall cache. It's small and the
-    // common case is one conversation per write. A prefix scan would be
-    // more precise but adds complexity for negligible gain.
-    this.recallCache.clear();
+    // Cache keys are prefixed with `${conversationId}:` so we can delete
+    // only this conversation's entries without touching other conversations.
+    this.recallCache.deleteByPrefix(`${conversationId}:`);
   }
 
   /** Expose cache stats for monitoring/logging. */
