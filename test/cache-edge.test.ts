@@ -83,6 +83,29 @@ describe('TtlCache — edge cases', () => {
     expect(cache.stats.hitRate).toBe(0);
   });
 
+  it('deleteByPrefix removes matching keys and returns count', () => {
+    const cache = new TtlCache<string, number>(1000);
+    cache.set('conv-a:all:6:abc', 1);
+    cache.set('conv-a:project:6:def', 2);
+    cache.set('conv-b:all:6:ghi', 3);
+    cache.set('conv-a:all:10:jkl', 4);
+
+    const deleted = cache.deleteByPrefix('conv-a:');
+    expect(deleted).toBe(3);
+    expect(cache.get('conv-a:all:6:abc')).toBeUndefined();
+    expect(cache.get('conv-a:project:6:def')).toBeUndefined();
+    expect(cache.get('conv-a:all:10:jkl')).toBeUndefined();
+    // conv-b untouched
+    expect(cache.get('conv-b:all:6:ghi')).toBe(3);
+  });
+
+  it('deleteByPrefix with no matches returns 0', () => {
+    const cache = new TtlCache<string, number>(1000);
+    cache.set('key-1', 1);
+    expect(cache.deleteByPrefix('nonexistent-')).toBe(0);
+    expect(cache.stats.size).toBe(1);
+  });
+
   it('overwriting a key does not inflate size', () => {
     const cache = new TtlCache<string, number>(1000);
     cache.set('key', 1);
