@@ -49,6 +49,13 @@ export type UpstreamConfig = z.infer<typeof upstreamSchema>;
 export const memoryWriteModes = ['llm', 'explicit', 'off'] as const;
 export type MemoryWriteMode = (typeof memoryWriteModes)[number];
 
+export interface TelemetryConfig {
+  enabled: boolean;
+  publicKey?: string;
+  secretKey?: string;
+  baseUrl: string;
+}
+
 const rawSchema = z.object({
   PORT: int(8710),
   HOST: z.string().optional().default('0.0.0.0'),
@@ -104,6 +111,16 @@ const rawSchema = z.object({
   // ── MCP endpoint ───────────────────────────────────────────────────────────
   MCP_ENABLED: bool(true),
   MCP_PATH: z.string().optional().default('/mcp'),
+
+  // ── Caching ────────────────────────────────────────────────────────────────
+  CACHE_NOTE_BODY_TTL_MS: int(300_000),
+  CACHE_RECALL_TTL_MS: int(120_000),
+  CACHE_SETTINGS_TTL_MS: int(30_000),
+
+  // ── Telemetry ──────────────────────────────────────────────────────────────
+  LANGFUSE_PUBLIC_KEY: z.string().optional(),
+  LANGFUSE_SECRET_KEY: z.string().optional(),
+  LANGFUSE_BASE_URL: z.string().optional().default('https://cloud.langfuse.com'),
 });
 
 export interface AppConfig {
@@ -155,6 +172,12 @@ export interface AppConfig {
     enabled: boolean;
     path: string;
   };
+  cache: {
+    noteBodyTtlMs: number;
+    recallTtlMs: number;
+    settingsTtlMs: number;
+  };
+  telemetry: TelemetryConfig;
 }
 
 /**
@@ -268,6 +291,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     mcp: {
       enabled: raw.MCP_ENABLED,
       path: raw.MCP_PATH,
+    },
+    cache: {
+      noteBodyTtlMs: raw.CACHE_NOTE_BODY_TTL_MS,
+      recallTtlMs: raw.CACHE_RECALL_TTL_MS,
+      settingsTtlMs: raw.CACHE_SETTINGS_TTL_MS,
+    },
+    telemetry: {
+      enabled: !!(raw.LANGFUSE_PUBLIC_KEY && raw.LANGFUSE_SECRET_KEY),
+      publicKey: raw.LANGFUSE_PUBLIC_KEY,
+      secretKey: raw.LANGFUSE_SECRET_KEY,
+      baseUrl: raw.LANGFUSE_BASE_URL,
     },
   };
 }
