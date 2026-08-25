@@ -51,6 +51,7 @@ const baseConfig: AppConfig = {
     noteBodyTtlMs: 300_000,
     recallTtlMs: 120_000,
     settingsTtlMs: 30_000,
+    maxEntries: 5_000,
   },
   telemetry: {
     enabled: false,

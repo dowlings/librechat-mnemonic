@@ -116,6 +116,8 @@ const rawSchema = z.object({
   CACHE_NOTE_BODY_TTL_MS: int(300_000),
   CACHE_RECALL_TTL_MS: int(120_000),
   CACHE_SETTINGS_TTL_MS: int(30_000),
+  /** Shared entry cap for all three caches, so a long-running process can't grow them unbounded. */
+  CACHE_MAX_ENTRIES: int(5_000),
 
   // ── Telemetry ──────────────────────────────────────────────────────────────
   LANGFUSE_PUBLIC_KEY: z.string().optional(),
@@ -176,6 +178,7 @@ export interface AppConfig {
     noteBodyTtlMs: number;
     recallTtlMs: number;
     settingsTtlMs: number;
+    maxEntries: number;
   };
   telemetry: TelemetryConfig;
 }
@@ -296,6 +299,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       noteBodyTtlMs: raw.CACHE_NOTE_BODY_TTL_MS,
       recallTtlMs: raw.CACHE_RECALL_TTL_MS,
       settingsTtlMs: raw.CACHE_SETTINGS_TTL_MS,
+      maxEntries: raw.CACHE_MAX_ENTRIES,
     },
     telemetry: {
       enabled: !!(raw.LANGFUSE_PUBLIC_KEY && raw.LANGFUSE_SECRET_KEY),

@@ -66,7 +66,10 @@ export class LibreChatStore {
   private readonly settingsCache: TtlCache<string, MemorySetting>;
 
   constructor(private readonly config: AppConfig) {
-    this.settingsCache = new TtlCache<string, MemorySetting>(config.cache.settingsTtlMs);
+    this.settingsCache = new TtlCache<string, MemorySetting>(
+      config.cache.settingsTtlMs,
+      config.cache.maxEntries,
+    );
   }
 
   private async connect(): Promise<Db> {
@@ -177,6 +180,11 @@ export class LibreChatStore {
   /** Drop a cached project mapping, e.g. after a chat is moved between projects. */
   invalidateConversation(conversationId: string): void {
     this.projectCache.delete(conversationId);
+  }
+
+  private async settings(): Promise<Collection> {
+    const db = await this.connect();
+    return db.collection(SETTINGS_COLLECTION);
   }
 
   private settingsCacheKey(userId: string | null, conversationId: string | null): string {

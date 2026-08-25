@@ -87,6 +87,7 @@ describe('loadConfig', () => {
     expect(config.cache.noteBodyTtlMs).toBe(300_000);
     expect(config.cache.recallTtlMs).toBe(120_000);
     expect(config.cache.settingsTtlMs).toBe(30_000);
+    expect(config.cache.maxEntries).toBe(5_000);
   });
 
   it('parses custom cache TTLs', () => {
@@ -95,10 +96,12 @@ describe('loadConfig', () => {
       CACHE_NOTE_BODY_TTL_MS: '600000',
       CACHE_RECALL_TTL_MS: '5000',
       CACHE_SETTINGS_TTL_MS: '10000',
+      CACHE_MAX_ENTRIES: '100',
     } as NodeJS.ProcessEnv);
     expect(config.cache.noteBodyTtlMs).toBe(600_000);
     expect(config.cache.recallTtlMs).toBe(5_000);
     expect(config.cache.settingsTtlMs).toBe(10_000);
+    expect(config.cache.maxEntries).toBe(100);
   });
 
   // ── Telemetry config ────────────────────────────────────────────────────────

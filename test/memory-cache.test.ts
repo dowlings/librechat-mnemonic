@@ -59,6 +59,7 @@ const baseConfig: AppConfig = {
     noteBodyTtlMs: 300_000,
     recallTtlMs: 120_000,
     settingsTtlMs: 30_000,
+    maxEntries: 5_000,
   },
   telemetry: {
     enabled: false,
@@ -66,7 +67,14 @@ const baseConfig: AppConfig = {
   },
 };
 
-function makeContext(overrides: Partial<{ userId: string; conversationId: string; projectName: string; cwd: string }> = {}) {
+function makeContext(
+  overrides: Partial<{
+    userId: string | null;
+    conversationId: string | null;
+    projectName: string | null;
+    cwd: string | null;
+  }> = {},
+) {
   return {
     userId: 'user-1',
     conversationId: 'conv-1',
@@ -133,6 +141,7 @@ function createMockMnemonic(opts: {
       return { structured: undefined, text: '' };
     }),
     calls,
+    getNotesOverride: opts.getNotesOverride,
   };
 
   return mock;
@@ -211,7 +220,9 @@ describe('MemoryService — cache invalidation on writes', () => {
     // Two conversations with primed caches. A write in conv-A should
     // invalidate only conv-A's entries, not conv-B's.
     const mnemonic = createMockMnemonic({
-      recallResults: [{ id: 'note-1', title: 'Note', score: 0.9, vault: 'main' }],
+      // Below the default dedupe threshold (0.82) so the save's own duplicate
+      // check doesn't block the write and short-circuit cache invalidation.
+      recallResults: [{ id: 'note-1', title: 'Note', score: 0.5, vault: 'main' }],
     });
     const store = createMockStore();
     const service = new MemoryService(baseConfig, mnemonic as never, store as never);
@@ -472,8 +483,10 @@ describe('MemoryService.recall — edge cases', () => {
 
   it('recall failure does not cache the error result', async () => {
     const mnemonic = createMockMnemonic({});
-    // Override recall to throw
-    mnemonic.call.mockImplementationOnce(async () => {
+    // Override recall to throw. Record the call ourselves — overriding the
+    // implementation bypasses the default mock's own `calls.push`.
+    mnemonic.call.mockImplementationOnce(async (tool, args) => {
+      mnemonic.calls.push({ tool, args });
       throw new Error('mnemonic connection failed');
     });
     const store = createMockStore();

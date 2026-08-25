@@ -208,6 +208,7 @@ Three independent caches keep latency low. All TTLs are configurable so you can 
 | `CACHE_NOTE_BODY_TTL_MS` | `300000` (5 min) | How long note bodies fetched via `get` are cached by ID. Eliminates the second mnemonic round-trip on repeated recalls. |
 | `CACHE_RECALL_TTL_MS` | `120000` (2 min) | How long recall results are cached per (conversation, query). Retries and message edits hit the cache. Invalidated on save/forget/update. |
 | `CACHE_SETTINGS_TTL_MS` | `30000` (30 s) | How long memory on/off settings are cached per (user, conversation). Eliminates most MongoDB round-trips. Invalidated immediately on `/memory on\|off`. |
+| `CACHE_MAX_ENTRIES` | `5000` | Shared entry cap for all three caches. Oldest entry is evicted once a cache reaches this size, bounding memory use in a long-running process. |
 
 ### Telemetry
 

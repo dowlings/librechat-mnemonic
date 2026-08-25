@@ -425,6 +425,7 @@ interface WriteArgs {
 async function writeMemories(args: WriteArgs): Promise<void> {
   const { config, memory, context, userText, assistantText, trace } = args;
   const writeSpan = trace.span({ name: 'memory-write' });
+  let outcome: Record<string, unknown> = { candidates: 0 };
   try {
     let candidates =
       config.memory.writeMode === 'explicit'
@@ -434,30 +435,30 @@ async function writeMemories(args: WriteArgs): Promise<void> {
             { user: userText, assistant: assistantText, project: context.projectName },
             config,
           );
-    
-    if (candidates.length === 0) {
-      writeSpan.end({ candidates: 0 });
-      return;
-    }
+
+    if (candidates.length === 0) return;
     candidates = candidates.slice(0, config.memory.maxPerTurn);
-    
+
     // Stamp auto-extracted notes with role: context and an auto-extracted tag
     // so they can be distinguished from explicit saves and prioritized differently.
     for (const candidate of candidates) {
       candidate.role = candidate.role ?? 'context';
       candidate.tags = [...(candidate.tags ?? []), 'auto-extracted'];
     }
-    
+
     // The context was resolved before the turn; re-resolve so a chat created
     // inside a project on this very turn still lands in the right place.
     const fresh = await memory.resolveContext(context.userId, context.conversationId);
     for (const candidate of candidates) {
       await memory.save(fresh, candidate);
     }
-    writeSpan.end({ candidates: candidates.length, cacheStats: memory.cacheStats.noteBody });
+    outcome = { candidates: candidates.length, cacheStats: memory.cacheStats.noteBody };
   } catch (error) {
-    writeSpan.end({ error: 'write-failed' });
+    outcome = { error: 'write-failed' };
     logger.error({ err: error }, 'post-turn memory write failed');
+  } finally {
+    // Always end the span exactly once, even if the catch block itself throws.
+    writeSpan.end(outcome);
   }
 }
 

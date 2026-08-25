@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { AppConfig } from '../config.js';
 import { TtlCache } from '../cache.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
@@ -43,8 +45,14 @@ export class MemoryService {
     private readonly mnemonic: MnemonicClient,
     private readonly store: LibreChatStore,
   ) {
-    this.noteBodyCache = new TtlCache<string, NoteBody>(config.cache.noteBodyTtlMs);
-    this.recallCache = new TtlCache<string, RecalledMemory[]>(config.cache.recallTtlMs);
+    this.noteBodyCache = new TtlCache<string, NoteBody>(
+      config.cache.noteBodyTtlMs,
+      config.cache.maxEntries,
+    );
+    this.recallCache = new TtlCache<string, RecalledMemory[]>(
+      config.cache.recallTtlMs,
+      config.cache.maxEntries,
+    );
   }
 
   /** Resolve the project context for a chat turn. */
@@ -334,11 +342,5 @@ function truncate(value: string, max: number): string {
 }
 
 function hashString(value: string): string {
-  let hash = 0;
-  for (let i = 0; i < value.length; i++) {
-    const char = value.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return hash.toString(36);
+  return createHash('sha256').update(value).digest('hex');
 }

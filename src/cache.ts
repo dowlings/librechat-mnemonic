@@ -10,7 +10,15 @@ export class TtlCache<K, V> {
   private hitCount = 0;
   private missCount = 0;
 
-  constructor(private readonly ttlMs: number) {}
+  /**
+   * `maxSize` bounds unbounded growth in a long-running process with many
+   * conversations/users. `Map` preserves insertion order, so the oldest entry
+   * is simply the first one iterated — a cheap FIFO eviction, not true LRU.
+   */
+  constructor(
+    private readonly ttlMs: number,
+    private readonly maxSize = Infinity,
+  ) {}
 
   get(key: K): V | undefined {
     const entry = this.store.get(key);
@@ -18,7 +26,7 @@ export class TtlCache<K, V> {
       this.missCount++;
       return undefined;
     }
-    if (Date.now() > entry.expiresAt) {
+    if (Date.now() >= entry.expiresAt) {
       this.store.delete(key);
       this.missCount++;
       return undefined;
@@ -28,6 +36,12 @@ export class TtlCache<K, V> {
   }
 
   set(key: K, value: V): void {
+    // Evict the oldest entry first so a fresh key doesn't push size past the
+    // limit; re-setting an existing key doesn't need an eviction.
+    if (!this.store.has(key) && this.store.size >= this.maxSize) {
+      const oldest = this.store.keys().next().value;
+      if (oldest !== undefined) this.store.delete(oldest);
+    }
     this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
   }
 

@@ -76,4 +76,33 @@ describe('TtlCache', () => {
     cache.set('b', 2);
     expect(cache.stats.size).toBe(2);
   });
+
+  // ── maxSize eviction ────────────────────────────────────────────────────────
+
+  it('evicts the oldest entry once maxSize is exceeded', () => {
+    const cache = new TtlCache<string, number>(1000, 2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+    expect(cache.stats.size).toBe(2);
+    expect(cache.get('a')).toBeUndefined();
+    expect(cache.get('b')).toBe(2);
+    expect(cache.get('c')).toBe(3);
+  });
+
+  it('re-setting an existing key does not evict when at maxSize', () => {
+    const cache = new TtlCache<string, number>(1000, 2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('a', 10);
+    expect(cache.stats.size).toBe(2);
+    expect(cache.get('a')).toBe(10);
+    expect(cache.get('b')).toBe(2);
+  });
+
+  it('has unbounded size when maxSize is not provided', () => {
+    const cache = new TtlCache<string, number>(1000);
+    for (let i = 0; i < 50; i++) cache.set(`key-${i}`, i);
+    expect(cache.stats.size).toBe(50);
+  });
 });

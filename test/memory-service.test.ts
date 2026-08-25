@@ -59,6 +59,7 @@ const baseConfig: AppConfig = {
     noteBodyTtlMs: 300_000,
     recallTtlMs: 120_000,
     settingsTtlMs: 30_000,
+    maxEntries: 5_000,
   },
   telemetry: {
     enabled: false,
@@ -423,23 +424,17 @@ describe('MemoryService.recall — cache behaviour', () => {
     const getCallsAfterFirst = mnemonic.calls.filter((c) => c.tool === 'get').length;
     expect(getCallsAfterFirst).toBe(1);
 
-    // A different query that returns the same note should not need another get
-    // (the recall itself misses the cache, but the body is already cached)
+    // The body is now cached — a direct getNotes call for the same id should
+    // be a full cache hit and make no further get call.
     mnemonic.calls.length = 0; // reset call log
-    // Use a different mock that returns the same note
-    const mnemonic2 = createMockMnemonic({
-      recallResults: [makeResult('note-1', 'Test note', 0.9)],
-    });
-    const service2 = new MemoryService(baseConfig, mnemonic2 as never, store as never);
-    // Manually seed the body cache by calling getNotes
     await service.getNotes(['note-1'], context);
     const getCalls = mnemonic.calls.filter((c) => c.tool === 'get').length;
-    expect(getCalls).toBe(1);
+    expect(getCalls).toBe(0);
 
-    // Now call getNotes again — should be fully cached
+    // Calling it again should still be fully cached.
     await service.getNotes(['note-1'], context);
     const getCallsSecond = mnemonic.calls.filter((c) => c.tool === 'get').length;
-    expect(getCallsSecond).toBe(1); // no new get call
+    expect(getCallsSecond).toBe(0); // no new get call
   });
 
   it('reports cache stats', async () => {
