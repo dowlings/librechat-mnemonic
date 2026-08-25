@@ -207,6 +207,37 @@ describe('MemoryService.recall — cache isolation', () => {
 // ── Recall cache invalidation tests ─────────────────────────────────────────
 
 describe('MemoryService — cache invalidation on writes', () => {
+  it('save invalidates recall cache only for the writing conversation', async () => {
+    // Two conversations with primed caches. A write in conv-A should
+    // invalidate only conv-A's entries, not conv-B's.
+    const mnemonic = createMockMnemonic({
+      recallResults: [{ id: 'note-1', title: 'Note', score: 0.9, vault: 'main' }],
+    });
+    const store = createMockStore();
+    const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+    const ctxA = makeContext({ conversationId: 'conv-a' });
+    const ctxB = makeContext({ conversationId: 'conv-b' });
+
+    // Prime both caches
+    await service.recall(ctxA, 'query');
+    await service.recall(ctxB, 'query');
+    expect(mnemonic.calls.filter((c) => c.tool === 'recall')).toHaveLength(2);
+
+    // Save in conv-A
+    await service.save(ctxA, { title: 'New', content: 'content', role: 'context' });
+
+    // Conv-A recall should miss (invalidated)
+    mnemonic.calls.length = 0;
+    await service.recall(ctxA, 'query');
+    expect(mnemonic.calls.filter((c) => c.tool === 'recall')).toHaveLength(1);
+
+    // Conv-B recall should still hit (not invalidated)
+    mnemonic.calls.length = 0;
+    await service.recall(ctxB, 'query');
+    expect(mnemonic.calls.filter((c) => c.tool === 'recall')).toHaveLength(0);
+  });
+
   it('save invalidates recall cache so next recall hits mnemonic', async () => {
     const mnemonic = createMockMnemonic({
       recallResults: [{ id: 'note-1', title: 'Note', score: 0.9, vault: 'main' }],
