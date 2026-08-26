@@ -1,6 +1,7 @@
 import type { AppConfig } from '../config.js';
 import { logger } from '../logger.js';
 import type { MemoryCandidate } from './types.js';
+import { sanitizeTitle } from './sanitize.js';
 
 /**
  * Deciding what is worth remembering.
@@ -168,7 +169,7 @@ export function parseCandidates(raw: string, max: number): MemoryCandidate[] {
   for (const entry of memories) {
     if (!entry || typeof entry !== 'object') continue;
     const record = entry as Record<string, unknown>;
-    const title = typeof record.title === 'string' ? record.title.trim() : '';
+    const title = typeof record.title === 'string' ? sanitizeTitle(record.title) : '';
     const content = typeof record.content === 'string' ? record.content.trim() : '';
     if (!title || !content) continue;
     const tags = Array.isArray(record.tags)
@@ -193,7 +194,8 @@ export function parseCandidates(raw: string, max: number): MemoryCandidate[] {
 
 function deriveTitle(text: string): string {
   const firstLine = text.split('\n')[0]?.trim() ?? '';
-  const clipped = firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+  const clean = sanitizeTitle(firstLine);
+  const clipped = clean.length > 120 ? `${clean.slice(0, 117)}...` : clean;
   return clipped || 'Untitled memory';
 }
 
