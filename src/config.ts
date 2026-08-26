@@ -18,8 +18,8 @@ const int = (fallback: number) =>
   z
     .string()
     .optional()
-    .transform((v) => (v === undefined || v === '' ? fallback : Number.parseInt(v, 10)))
-    .refine((v) => Number.isFinite(v), { message: 'must be an integer' });
+    .transform((v) => (v === undefined || v === '' ? fallback : Number(v)))
+    .refine((v) => Number.isInteger(v), { message: 'must be an integer' });
 
 /** Like `int`, but rejects zero and negative values — for TTLs and caps that must be usable. */
 const positiveInt = (fallback: number) =>

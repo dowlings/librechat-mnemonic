@@ -119,6 +119,21 @@ describe('loadConfig', () => {
     }
   });
 
+  it('rejects malformed decimal cache TTLs and max entries', () => {
+    for (const key of [
+      'CACHE_NOTE_BODY_TTL_MS',
+      'CACHE_RECALL_TTL_MS',
+      'CACHE_SETTINGS_TTL_MS',
+      'CACHE_MAX_ENTRIES',
+    ]) {
+      for (const value of ['1.5', '-1.5', 'NaN', '1,000']) {
+        expect(() => loadConfig({ ...base, [key]: value } as NodeJS.ProcessEnv)).toThrow(
+          /must be an integer/,
+        );
+      }
+    }
+  });
+
   // ── Telemetry config ────────────────────────────────────────────────────────
 
   it('disables telemetry when no keys are set', () => {
