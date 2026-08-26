@@ -6,6 +6,7 @@ import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MnemonicClient } from '../mnemonic/client.js';
 import { resolveProjectDir } from '../mnemonic/projects.js';
+import { sanitizeTitle } from './sanitize.js';
 import type {
   GetResponse,
   MemoryCandidate,
@@ -217,7 +218,7 @@ export class MemoryService {
     const tags = dedupeTags([...(candidate.tags ?? []), this.config.mnemonic.tag]);
 
     const args: Record<string, unknown> = {
-      title: candidate.title,
+      title: sanitizeTitle(candidate.title),
       content: candidate.content,
       tags,
       scope: this.config.mnemonic.writeScope,
@@ -290,7 +291,11 @@ export class MemoryService {
     id: string,
     patch: { title?: string; content?: string; tags?: string[] },
   ): Promise<boolean> {
-    const args: Record<string, unknown> = { id, ...patch };
+    const args: Record<string, unknown> = {
+      id,
+      ...patch,
+      ...(patch.title ? { title: sanitizeTitle(patch.title) } : {}),
+    };
     if (context.cwd) args.cwd = context.cwd;
     try {
       await this.mnemonic.call('update', args);
