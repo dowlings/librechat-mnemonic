@@ -238,7 +238,7 @@ When either key is missing, telemetry is a no-op with zero overhead.
 
 ### `/healthz`
 
-Returns JSON with service status, upstream names, telemetry status, and cache stats:
+Returns JSON with service status, upstream names, telemetry status, and cache stats for all three caches:
 
 ```json
 {
@@ -247,7 +247,8 @@ Returns JSON with service status, upstream names, telemetry status, and cache st
   "telemetry": "on",
   "cache": {
     "noteBody": { "hits": 42, "misses": 3, "size": 12, "hitRate": 0.93 },
-    "recall": { "hits": 8, "misses": 15, "size": 5, "hitRate": 0.35 }
+    "recall": { "hits": 8, "misses": 15, "size": 5, "hitRate": 0.35 },
+    "settings": { "hits": 120, "misses": 6, "size": 9, "hitRate": 0.95 }
   }
 }
 ```

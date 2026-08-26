@@ -26,7 +26,10 @@ export function createApp(deps: ServerDeps): Express {
       ok: true,
       upstreams: config.upstreams.map((upstream) => upstream.name),
       telemetry: telemetry.enabled ? 'on' : 'off',
-      cache: memory.cacheStats,
+      cache: {
+        ...memory.cacheStats,
+        settings: store.settingsCacheStats,
+      },
     });
   });
 

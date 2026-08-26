@@ -21,6 +21,10 @@ const int = (fallback: number) =>
     .transform((v) => (v === undefined || v === '' ? fallback : Number.parseInt(v, 10)))
     .refine((v) => Number.isFinite(v), { message: 'must be an integer' });
 
+/** Like `int`, but rejects zero and negative values — for TTLs and caps that must be usable. */
+const positiveInt = (fallback: number) =>
+  int(fallback).refine((v) => v > 0, { message: 'must be a positive integer' });
+
 const num = (fallback: number) =>
   z
     .string()
@@ -113,11 +117,11 @@ const rawSchema = z.object({
   MCP_PATH: z.string().optional().default('/mcp'),
 
   // ── Caching ────────────────────────────────────────────────────────────────
-  CACHE_NOTE_BODY_TTL_MS: int(300_000),
-  CACHE_RECALL_TTL_MS: int(120_000),
-  CACHE_SETTINGS_TTL_MS: int(30_000),
+  CACHE_NOTE_BODY_TTL_MS: positiveInt(300_000),
+  CACHE_RECALL_TTL_MS: positiveInt(120_000),
+  CACHE_SETTINGS_TTL_MS: positiveInt(30_000),
   /** Shared entry cap for all three caches, so a long-running process can't grow them unbounded. */
-  CACHE_MAX_ENTRIES: int(5_000),
+  CACHE_MAX_ENTRIES: positiveInt(5_000),
 
   // ── Telemetry ──────────────────────────────────────────────────────────────
   LANGFUSE_PUBLIC_KEY: z.string().optional(),

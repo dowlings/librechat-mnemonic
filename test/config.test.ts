@@ -104,6 +104,21 @@ describe('loadConfig', () => {
     expect(config.cache.maxEntries).toBe(100);
   });
 
+  it('rejects zero or negative cache TTLs and max entries', () => {
+    for (const key of [
+      'CACHE_NOTE_BODY_TTL_MS',
+      'CACHE_RECALL_TTL_MS',
+      'CACHE_SETTINGS_TTL_MS',
+      'CACHE_MAX_ENTRIES',
+    ]) {
+      for (const value of ['0', '-1']) {
+        expect(() => loadConfig({ ...base, [key]: value } as NodeJS.ProcessEnv)).toThrow(
+          /positive integer/,
+        );
+      }
+    }
+  });
+
   // ── Telemetry config ────────────────────────────────────────────────────────
 
   it('disables telemetry when no keys are set', () => {

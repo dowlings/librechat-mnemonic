@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createTelemetry, type Telemetry, type Trace } from '../src/telemetry.js';
+import { createTelemetry, type Telemetry } from '../src/telemetry.js';
 
 // We test the noop path without importing Langfuse (which would require the
 // dep to be installed). The LangfuseTelemetry class is only constructed when

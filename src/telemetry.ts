@@ -87,7 +87,7 @@ class LangfuseTelemetry implements Telemetry {
 class NoopTelemetry implements Telemetry {
   readonly enabled = false;
 
-  trace(_options: TraceOptions): Trace {
+  trace(): Trace {
     const noopSpan: Span = { end: () => {} };
     return {
       span: () => noopSpan,

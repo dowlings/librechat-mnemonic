@@ -94,7 +94,6 @@ export class MemoryService {
     const limit = overrides.limit ?? this.config.mnemonic.recallLimit;
 
     // Check recall cache — retries and edits produce the same query.
-    // Key is prefixed with conversationId so invalidation can be scoped.
     const cacheKey = `${context.conversationId ?? 'none'}:${scope}:${limit}:${hashString(query)}`;
     const cached = this.recallCache.get(cacheKey);
     if (cached) {
@@ -240,8 +239,7 @@ export class MemoryService {
         { id: structured?.id, project: context.projectName ?? '(none)', title: candidate.title },
         'memory saved',
       );
-      // Invalidate recall cache for this conversation — a new note changes results.
-      this.invalidateRecallCache(context.conversationId);
+      this.invalidateRecallCache();
       return { saved: true, id: structured?.id };
     } catch (error) {
       logger.error({ err: error, title: candidate.title }, 'remember failed');
@@ -279,7 +277,7 @@ export class MemoryService {
     try {
       await this.mnemonic.call('forget', args);
       this.noteBodyCache.delete(id);
-      this.invalidateRecallCache(context.conversationId);
+      this.invalidateRecallCache();
       return true;
     } catch (error) {
       logger.error({ err: error, id }, 'forget failed');
@@ -297,7 +295,7 @@ export class MemoryService {
     try {
       await this.mnemonic.call('update', args);
       this.noteBodyCache.delete(id);
-      this.invalidateRecallCache(context.conversationId);
+      this.invalidateRecallCache();
       return true;
     } catch (error) {
       logger.error({ err: error, id }, 'update failed');
@@ -316,12 +314,19 @@ export class MemoryService {
     return result.structured ?? result.text;
   }
 
-  /** Invalidate recall cache entries for a specific conversation only. */
-  invalidateRecallCache(conversationId: string | null): void {
-    if (!conversationId) return;
-    // Cache keys are prefixed with `${conversationId}:` so we can delete
-    // only this conversation's entries without touching other conversations.
-    this.recallCache.deleteByPrefix(`${conversationId}:`);
+  /**
+   * Invalidate the recall cache after a write.
+   *
+   * Memories live in one global vault (see class docs): a note written from
+   * conversation A can surface in conversation B's recall results whenever
+   * they share a project (recall scope "all"/"project") or scope is
+   * "global". Invalidating only the writing conversation's cache entries
+   * would leave every other conversation's cache serving stale results, so
+   * any write clears the whole recall cache rather than just the writer's
+   * slice.
+   */
+  invalidateRecallCache(): void {
+    this.recallCache.clear();
   }
 
   /** Expose cache stats for monitoring/logging. */

@@ -216,9 +216,12 @@ describe('MemoryService.recall — cache isolation', () => {
 // ── Recall cache invalidation tests ─────────────────────────────────────────
 
 describe('MemoryService — cache invalidation on writes', () => {
-  it('save invalidates recall cache only for the writing conversation', async () => {
-    // Two conversations with primed caches. A write in conv-A should
-    // invalidate only conv-A's entries, not conv-B's.
+  it('save invalidates the recall cache for every conversation, not just the writer', async () => {
+    // Memories live in one global vault (see MemoryService class docs): a note
+    // written from conv-A can surface in conv-B's recall results whenever they
+    // share a project or recall scope is "all"/"global". Conversation-scoped
+    // invalidation would leave conv-B's cache stale, so a write in conv-A must
+    // invalidate conv-B's cached recall too.
     const mnemonic = createMockMnemonic({
       // Below the default dedupe threshold (0.82) so the save's own duplicate
       // check doesn't block the write and short-circuit cache invalidation.
@@ -243,10 +246,11 @@ describe('MemoryService — cache invalidation on writes', () => {
     await service.recall(ctxA, 'query');
     expect(mnemonic.calls.filter((c) => c.tool === 'recall')).toHaveLength(1);
 
-    // Conv-B recall should still hit (not invalidated)
+    // Conv-B recall should also miss — the write is visible vault-wide, so
+    // conv-B's stale cache entry must be invalidated too.
     mnemonic.calls.length = 0;
     await service.recall(ctxB, 'query');
-    expect(mnemonic.calls.filter((c) => c.tool === 'recall')).toHaveLength(0);
+    expect(mnemonic.calls.filter((c) => c.tool === 'recall')).toHaveLength(1);
   });
 
   it('save invalidates recall cache so next recall hits mnemonic', async () => {
