@@ -2,6 +2,7 @@ import type { AppConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
 import type { MemoryService } from '../memory/service.js';
 import type { MemoryContext } from '../memory/types.js';
+import { sanitizeTitle } from '../memory/sanitize.js';
 /**
  * In-chat control surface.
  *
@@ -172,6 +173,7 @@ export async function runCommand(
 }
 function deriveTitle(text: string): string {
   const firstLine = text.split('\n')[0]?.trim() ?? text.trim();
-  const clipped = firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+  const clean = sanitizeTitle(firstLine);
+  const clipped = clean.length > 120 ? `${clean.slice(0, 117)}...` : clean;
   return clipped || 'Untitled memory';
 }
