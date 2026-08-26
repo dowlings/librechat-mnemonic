@@ -79,4 +79,97 @@ describe('loadConfig', () => {
     } as NodeJS.ProcessEnv);
     expect(config.librechat.userHeader).toBe('x-my-user');
   });
+
+  // ── Cache config ────────────────────────────────────────────────────────────
+
+  it('applies cache TTL defaults', () => {
+    const config = loadConfig(base as NodeJS.ProcessEnv);
+    expect(config.cache.noteBodyTtlMs).toBe(300_000);
+    expect(config.cache.recallTtlMs).toBe(120_000);
+    expect(config.cache.settingsTtlMs).toBe(30_000);
+    expect(config.cache.maxEntries).toBe(5_000);
+  });
+
+  it('parses custom cache TTLs', () => {
+    const config = loadConfig({
+      ...base,
+      CACHE_NOTE_BODY_TTL_MS: '600000',
+      CACHE_RECALL_TTL_MS: '5000',
+      CACHE_SETTINGS_TTL_MS: '10000',
+      CACHE_MAX_ENTRIES: '100',
+    } as NodeJS.ProcessEnv);
+    expect(config.cache.noteBodyTtlMs).toBe(600_000);
+    expect(config.cache.recallTtlMs).toBe(5_000);
+    expect(config.cache.settingsTtlMs).toBe(10_000);
+    expect(config.cache.maxEntries).toBe(100);
+  });
+
+  it('rejects zero or negative cache TTLs and max entries', () => {
+    for (const key of [
+      'CACHE_NOTE_BODY_TTL_MS',
+      'CACHE_RECALL_TTL_MS',
+      'CACHE_SETTINGS_TTL_MS',
+      'CACHE_MAX_ENTRIES',
+    ]) {
+      for (const value of ['0', '-1']) {
+        expect(() => loadConfig({ ...base, [key]: value } as NodeJS.ProcessEnv)).toThrow(
+          /positive integer/,
+        );
+      }
+    }
+  });
+
+  it('rejects malformed decimal cache TTLs and max entries', () => {
+    for (const key of [
+      'CACHE_NOTE_BODY_TTL_MS',
+      'CACHE_RECALL_TTL_MS',
+      'CACHE_SETTINGS_TTL_MS',
+      'CACHE_MAX_ENTRIES',
+    ]) {
+      for (const value of ['1.5', '-1.5', 'NaN', '1,000']) {
+        expect(() => loadConfig({ ...base, [key]: value } as NodeJS.ProcessEnv)).toThrow(
+          /must be an integer/,
+        );
+      }
+    }
+  });
+
+  // ── Telemetry config ────────────────────────────────────────────────────────
+
+  it('disables telemetry when no keys are set', () => {
+    const config = loadConfig(base as NodeJS.ProcessEnv);
+    expect(config.telemetry.enabled).toBe(false);
+    expect(config.telemetry.publicKey).toBeUndefined();
+    expect(config.telemetry.secretKey).toBeUndefined();
+    expect(config.telemetry.baseUrl).toBe('https://cloud.langfuse.com');
+  });
+
+  it('enables telemetry when both keys are present', () => {
+    const config = loadConfig({
+      ...base,
+      LANGFUSE_PUBLIC_KEY: 'pk-lf-test',
+      LANGFUSE_SECRET_KEY: 'sk-lf-test',
+    } as NodeJS.ProcessEnv);
+    expect(config.telemetry.enabled).toBe(true);
+    expect(config.telemetry.publicKey).toBe('pk-lf-test');
+    expect(config.telemetry.secretKey).toBe('sk-lf-test');
+  });
+
+  it('does not enable telemetry with only a public key', () => {
+    const config = loadConfig({
+      ...base,
+      LANGFUSE_PUBLIC_KEY: 'pk-lf-test',
+    } as NodeJS.ProcessEnv);
+    expect(config.telemetry.enabled).toBe(false);
+  });
+
+  it('honours a custom Langfuse base URL', () => {
+    const config = loadConfig({
+      ...base,
+      LANGFUSE_PUBLIC_KEY: 'pk-lf-test',
+      LANGFUSE_SECRET_KEY: 'sk-lf-test',
+      LANGFUSE_BASE_URL: 'https://langfuse.self-hosted.example',
+    } as NodeJS.ProcessEnv);
+    expect(config.telemetry.baseUrl).toBe('https://langfuse.self-hosted.example');
+  });
 });

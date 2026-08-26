@@ -12,6 +12,8 @@ Nothing is forked or patched. This runs as one container alongside LibreChat.
 - **Writes after every turn.** Durable facts are extracted from the exchange and stored, with duplicates detected and skipped.
 - **Scopes by LibreChat project.** A chat in the "Home Network" project reads and writes memories stamped with that project. Memories live in one global vault, partitioned by project, so nothing is siloed unless you want it to be.
 - **Stays out of the way.** `/memory off` in any chat, and that conversation stops recalling and storing.
+- **Caches aggressively.** Note bodies, recall results, and memory settings are cached with configurable TTLs to keep latency low. Cache stats are exposed via `/healthz` and Langfuse span metadata.
+- **Traces every turn.** When Langfuse credentials are set, each chat turn is traced with spans for resolve-context, recall, upstream, and memory-write.
 - **Exposes tools too.** An MCP endpoint lets agents search, correct, and forget memories explicitly when the automatic path is not enough.
 
 ## How it works
@@ -197,6 +199,31 @@ Leave unset to reuse the chat's own model and credentials. Setting a small dedic
 | `EXTRACT_API_KEY` | none | Bearer token |
 | `EXTRACT_TIMEOUT_MS` | `30000` | Extraction is detached; a timeout drops the write, never the reply |
 
+### Caching
+
+Three independent caches keep latency low. All TTLs are configurable so you can trade freshness for speed. Cache hit/miss stats are reported on the `/healthz` endpoint and in Langfuse span metadata.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CACHE_NOTE_BODY_TTL_MS` | `300000` (5 min) | How long note bodies fetched via `get` are cached by ID. Eliminates the second mnemonic round-trip on repeated recalls. |
+| `CACHE_RECALL_TTL_MS` | `120000` (2 min) | How long recall results are cached per (conversation, query). Retries and message edits hit the cache. Invalidated on save/forget/update. |
+| `CACHE_SETTINGS_TTL_MS` | `30000` (30 s) | How long memory on/off settings are cached per (user, conversation). Eliminates most MongoDB round-trips. Invalidated immediately on `/memory on\|off`. |
+| `CACHE_MAX_ENTRIES` | `5000` | Shared entry cap for all three caches. Oldest entry is evicted once a cache reaches this size, bounding memory use in a long-running process. |
+
+### Telemetry
+
+When Langfuse credentials are set, the proxy creates its own Langfuse client and traces each augmented chat turn. Traces use `sessionId = conversationId` so they correlate with LibreChat's own Langfuse traces. Spans cover `resolve-context`, `recall`, `upstream`, and `memory-write`.
+
+Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Docker Compose env vars from 1Password or your secret manager) so traces from both services appear under the same session.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LANGFUSE_PUBLIC_KEY` | none | Langfuse public key. When set with the secret key, telemetry is enabled. |
+| `LANGFUSE_SECRET_KEY` | none | Langfuse secret key. |
+| `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse API URL. Point at your self-hosted instance if needed. |
+
+When either key is missing, telemetry is a no-op with zero overhead.
+
 ### Service
 
 | Variable | Default | Description |
@@ -206,6 +233,38 @@ Leave unset to reuse the chat's own model and credentials. Setting a small dedic
 | `LOG_LEVEL` | `info` | pino level |
 | `MCP_ENABLED` | `true` | Serve the MCP endpoint |
 | `MCP_PATH` | `/mcp` | Where to serve it |
+
+## Monitoring
+
+### `/healthz`
+
+Returns JSON with service status, upstream names, telemetry status, and cache stats for all three caches:
+
+```json
+{
+  "ok": true,
+  "upstreams": ["openai", "anthropic"],
+  "telemetry": "on",
+  "cache": {
+    "noteBody": { "hits": 42, "misses": 3, "size": 12, "hitRate": 0.93 },
+    "recall": { "hits": 8, "misses": 15, "size": 5, "hitRate": 0.35 },
+    "settings": { "hits": 120, "misses": 6, "size": 9, "hitRate": 0.95 }
+  }
+}
+```
+
+### Langfuse
+
+When enabled, each chat turn produces a trace with four spans:
+
+| Span | What it measures |
+| --- | --- |
+| `resolve-context` | MongoDB project lookup + project directory resolution |
+| `recall` | Semantic search + note body hydration (includes cache hit/miss in metadata) |
+| `upstream` | Time spent waiting for the model provider |
+| `memory-write` | Extraction + dedupe + write (detached, ends after the response is sent) |
+
+Filter by `sessionId` in Langfuse to see all turns for a conversation.
 
 ## MCP tools
 
@@ -232,6 +291,7 @@ Worth knowing before you rely on it.
 - **Multi-user installs share memory by project name.** There is no per-user partition in the vault. Fine for a personal or small-team instance, wrong for a multi-tenant one.
 - **Automatic extraction is a judgement call made by a model.** It will sometimes store something you would not have, and miss something you would. `MEMORY_WRITE_MODE=explicit` trades recall for precision.
 - **Tool-calling turns are passed through untouched.** Memory is injected on the request and extracted from the final text, so intermediate tool rounds are not analysed separately.
+- **Cache TTLs trade freshness for latency.** If you change a memory via the MCP tools or another mnemonic client, the proxy may serve stale cached results for up to the TTL. The defaults are conservative; lower them if you need faster consistency.
 
 ## Images and releases
 

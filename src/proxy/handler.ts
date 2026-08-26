@@ -6,6 +6,7 @@ import { logger } from '../logger.js';
 import { extractExplicit, extractWithModel, type ModelSpec } from '../memory/extract.js';
 import type { MemoryService } from '../memory/service.js';
 import type { MemoryContext } from '../memory/types.js';
+import type { Telemetry, Trace } from '../telemetry.js';
 import { adapterFor, collectStreamText, type ChatAdapter } from './adapters.js';
 import { parseCommand, runCommand } from './commands.js';
 import { buildMemoryBlock, buildRecallQuery, messageText } from './inject.js';
@@ -38,10 +39,11 @@ export interface ProxyDeps {
   config: AppConfig;
   store: LibreChatStore;
   memory: MemoryService;
+  telemetry: Telemetry;
 }
 
 export function createProxyHandler(deps: ProxyDeps) {
-  const { config, store, memory } = deps;
+  const { config, store, memory, telemetry } = deps;
   const byName = new Map(config.upstreams.map((upstream) => [upstream.name, upstream]));
 
   return async function handle(req: Request, res: Response): Promise<void> {
@@ -111,12 +113,27 @@ export function createProxyHandler(deps: ProxyDeps) {
       return;
     }
 
+    // ── Telemetry: one trace per augmented chat turn ────────────────────────
+    const trace = telemetry.trace({
+      name: 'chat-turn',
+      sessionId: conversationId,
+      userId: userId ?? undefined,
+      metadata: {
+        upstream: upstream.name,
+        model: typeof parsed.model === 'string' ? parsed.model : undefined,
+        format,
+      },
+    });
+
     // One retry: on the first turn of a brand new chat the conversation
     // document may not be written yet.
+    const ctxSpan = trace.span({ name: 'resolve-context' });
     const context = await memory.resolveContext(userId, conversationId, { retries: 1 });
+    ctxSpan.end({ project: context.projectName });
 
     let outgoing = parsed;
     if (config.memory.recallEnabled) {
+      const recallSpan = trace.span({ name: 'recall' });
       const query = buildRecallQuery(messages, {
         messageCount: config.memory.queryMessageCount,
         maxChars: config.memory.queryMaxChars,
@@ -124,6 +141,11 @@ export function createProxyHandler(deps: ProxyDeps) {
       if (query) {
         const recalled = await memory.recall(context, query);
         const block = buildMemoryBlock(recalled, context, config.memory.maxContextChars);
+        recallSpan.end({
+          count: recalled.length,
+          hasBlock: !!block,
+          cacheStats: memory.cacheStats.recall,
+        });
         if (block) {
           outgoing = adapter.inject(parsed, block);
           logger.debug(
@@ -131,6 +153,8 @@ export function createProxyHandler(deps: ProxyDeps) {
             'injected recalled memories',
           );
         }
+      } else {
+        recallSpan.end({ count: 0 });
       }
     }
 
@@ -148,10 +172,17 @@ export function createProxyHandler(deps: ProxyDeps) {
         model: typeof parsed.model === 'string' ? parsed.model : undefined,
         userText: lastUserText,
         assistantText: text,
+        trace,
       });
     };
 
+    const upstreamSpan = trace.span({ name: 'upstream' });
     await passthrough(req, res, targetUrl, outgoingBody, upstream, { adapter, onAssistantText });
+    upstreamSpan.end();
+
+    // End the trace now that the response is sent. The write span may still be
+    // in flight (writeMemories is detached); Langfuse handles late span ends.
+    trace.end();
   };
 }
 
@@ -384,6 +415,7 @@ interface WriteArgs {
   model?: string;
   userText: string;
   assistantText: string;
+  trace: Trace;
 }
 
 /**
@@ -391,7 +423,9 @@ interface WriteArgs {
  * delivered, so nothing here can slow down or break the chat.
  */
 async function writeMemories(args: WriteArgs): Promise<void> {
-  const { config, memory, context, userText, assistantText } = args;
+  const { config, memory, context, userText, assistantText, trace } = args;
+  const writeSpan = trace.span({ name: 'memory-write' });
+  let outcome: Record<string, unknown> = { candidates: 0 };
   try {
     let candidates =
       config.memory.writeMode === 'explicit'
@@ -401,25 +435,30 @@ async function writeMemories(args: WriteArgs): Promise<void> {
             { user: userText, assistant: assistantText, project: context.projectName },
             config,
           );
-    
+
     if (candidates.length === 0) return;
     candidates = candidates.slice(0, config.memory.maxPerTurn);
-    
+
     // Stamp auto-extracted notes with role: context and an auto-extracted tag
     // so they can be distinguished from explicit saves and prioritized differently.
     for (const candidate of candidates) {
       candidate.role = candidate.role ?? 'context';
       candidate.tags = [...(candidate.tags ?? []), 'auto-extracted'];
     }
-    
+
     // The context was resolved before the turn; re-resolve so a chat created
     // inside a project on this very turn still lands in the right place.
     const fresh = await memory.resolveContext(context.userId, context.conversationId);
     for (const candidate of candidates) {
       await memory.save(fresh, candidate);
     }
+    outcome = { candidates: candidates.length, cacheStats: memory.cacheStats.noteBody };
   } catch (error) {
+    outcome = { error: 'write-failed' };
     logger.error({ err: error }, 'post-turn memory write failed');
+  } finally {
+    // Always end the span exactly once, even if the catch block itself throws.
+    writeSpan.end(outcome);
   }
 }
 

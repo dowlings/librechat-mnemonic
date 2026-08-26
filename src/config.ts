@@ -18,8 +18,12 @@ const int = (fallback: number) =>
   z
     .string()
     .optional()
-    .transform((v) => (v === undefined || v === '' ? fallback : Number.parseInt(v, 10)))
-    .refine((v) => Number.isFinite(v), { message: 'must be an integer' });
+    .transform((v) => (v === undefined || v === '' ? fallback : Number(v)))
+    .refine((v) => Number.isInteger(v), { message: 'must be an integer' });
+
+/** Like `int`, but rejects zero and negative values — for TTLs and caps that must be usable. */
+const positiveInt = (fallback: number) =>
+  int(fallback).refine((v) => v > 0, { message: 'must be a positive integer' });
 
 const num = (fallback: number) =>
   z
@@ -48,6 +52,13 @@ export type UpstreamConfig = z.infer<typeof upstreamSchema>;
 
 export const memoryWriteModes = ['llm', 'explicit', 'off'] as const;
 export type MemoryWriteMode = (typeof memoryWriteModes)[number];
+
+export interface TelemetryConfig {
+  enabled: boolean;
+  publicKey?: string;
+  secretKey?: string;
+  baseUrl: string;
+}
 
 const rawSchema = z.object({
   PORT: int(8710),
@@ -104,6 +115,18 @@ const rawSchema = z.object({
   // ── MCP endpoint ───────────────────────────────────────────────────────────
   MCP_ENABLED: bool(true),
   MCP_PATH: z.string().optional().default('/mcp'),
+
+  // ── Caching ────────────────────────────────────────────────────────────────
+  CACHE_NOTE_BODY_TTL_MS: positiveInt(300_000),
+  CACHE_RECALL_TTL_MS: positiveInt(120_000),
+  CACHE_SETTINGS_TTL_MS: positiveInt(30_000),
+  /** Shared entry cap for all three caches, so a long-running process can't grow them unbounded. */
+  CACHE_MAX_ENTRIES: positiveInt(5_000),
+
+  // ── Telemetry ──────────────────────────────────────────────────────────────
+  LANGFUSE_PUBLIC_KEY: z.string().optional(),
+  LANGFUSE_SECRET_KEY: z.string().optional(),
+  LANGFUSE_BASE_URL: z.string().optional().default('https://cloud.langfuse.com'),
 });
 
 export interface AppConfig {
@@ -155,6 +178,13 @@ export interface AppConfig {
     enabled: boolean;
     path: string;
   };
+  cache: {
+    noteBodyTtlMs: number;
+    recallTtlMs: number;
+    settingsTtlMs: number;
+    maxEntries: number;
+  };
+  telemetry: TelemetryConfig;
 }
 
 /**
@@ -268,6 +298,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     mcp: {
       enabled: raw.MCP_ENABLED,
       path: raw.MCP_PATH,
+    },
+    cache: {
+      noteBodyTtlMs: raw.CACHE_NOTE_BODY_TTL_MS,
+      recallTtlMs: raw.CACHE_RECALL_TTL_MS,
+      settingsTtlMs: raw.CACHE_SETTINGS_TTL_MS,
+      maxEntries: raw.CACHE_MAX_ENTRIES,
+    },
+    telemetry: {
+      enabled: !!(raw.LANGFUSE_PUBLIC_KEY && raw.LANGFUSE_SECRET_KEY),
+      publicKey: raw.LANGFUSE_PUBLIC_KEY,
+      secretKey: raw.LANGFUSE_SECRET_KEY,
+      baseUrl: raw.LANGFUSE_BASE_URL,
     },
   };
 }

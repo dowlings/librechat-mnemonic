@@ -4,6 +4,7 @@ import { logger } from './logger.js';
 import { MemoryService } from './memory/service.js';
 import { MnemonicClient } from './mnemonic/client.js';
 import { createApp } from './server.js';
+import { createTelemetry } from './telemetry.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -12,11 +13,12 @@ async function main(): Promise<void> {
     logger.warn('No UPSTREAMS configured; the proxy will 404 every request.');
   }
 
+  const telemetry = createTelemetry(config.telemetry);
   const mnemonic = new MnemonicClient(config);
   const store = new LibreChatStore(config);
   const memory = new MemoryService(config, mnemonic, store);
 
-  const app = createApp({ config, store, memory });
+  const app = createApp({ config, store, memory, telemetry });
 
   const server = app.listen(config.port, config.host, () => {
     logger.info(
@@ -26,6 +28,12 @@ async function main(): Promise<void> {
         mnemonic: config.mnemonic.mode,
         writeMode: config.memory.writeMode,
         defaultEnabled: config.memory.defaultEnabled,
+        telemetry: telemetry.enabled ? 'on' : 'off',
+        cache: {
+          noteBodyTtlMs: config.cache.noteBodyTtlMs,
+          recallTtlMs: config.cache.recallTtlMs,
+          settingsTtlMs: config.cache.settingsTtlMs,
+        },
       },
       'librechat-mnemonic listening',
     );
@@ -34,7 +42,11 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     server.close();
-    await Promise.allSettled([mnemonic.close(), store.close()]);
+    await Promise.allSettled([
+      telemetry.flush(),
+      mnemonic.close(),
+      store.close(),
+    ]);
     process.exit(0);
   };
 

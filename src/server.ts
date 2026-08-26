@@ -5,22 +5,32 @@ import type { LibreChatStore } from './librechat/mongo.js';
 import { logger } from './logger.js';
 import { createMcpHandler } from './mcp/server.js';
 import type { MemoryService } from './memory/service.js';
+import type { Telemetry } from './telemetry.js';
 import { createProxyHandler } from './proxy/handler.js';
 
 export interface ServerDeps {
   config: AppConfig;
   store: LibreChatStore;
   memory: MemoryService;
+  telemetry: Telemetry;
 }
 
 export function createApp(deps: ServerDeps): Express {
-  const { config } = deps;
+  const { config, store, memory, telemetry } = deps;
   const app = express();
 
   app.disable('x-powered-by');
 
   app.get('/healthz', (_req, res) => {
-    res.json({ ok: true, upstreams: config.upstreams.map((upstream) => upstream.name) });
+    res.json({
+      ok: true,
+      upstreams: config.upstreams.map((upstream) => upstream.name),
+      telemetry: telemetry.enabled ? 'on' : 'off',
+      cache: {
+        ...memory.cacheStats,
+        settings: store.settingsCacheStats,
+      },
+    });
   });
 
   /*

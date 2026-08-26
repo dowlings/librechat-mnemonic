@@ -1,5 +1,6 @@
 import { MongoClient, ObjectId, type Collection, type Db } from 'mongodb';
 
+import { TtlCache } from '../cache.js';
 import type { AppConfig } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -61,7 +62,15 @@ export class LibreChatStore {
   private readonly projectCache = new Map<string, { value: ConversationProject | null; at: number }>();
   private readonly projectCacheTtlMs = 30_000;
 
-  constructor(private readonly config: AppConfig) {}
+  /** (userId, conversationId) -> MemorySetting, configurable TTL. */
+  private readonly settingsCache: TtlCache<string, MemorySetting>;
+
+  constructor(private readonly config: AppConfig) {
+    this.settingsCache = new TtlCache<string, MemorySetting>(
+      config.cache.settingsTtlMs,
+      config.cache.maxEntries,
+    );
+  }
 
   private async connect(): Promise<Db> {
     if (this.db) return this.db;
@@ -178,26 +187,40 @@ export class LibreChatStore {
     return db.collection(SETTINGS_COLLECTION);
   }
 
+  private settingsCacheKey(userId: string | null, conversationId: string | null): string {
+    return `${userId ?? 'none'}:${conversationId ?? 'none'}`;
+  }
+
   /** Resolve whether memory is on for this chat: conversation, then user, then config default. */
   async getMemorySetting(userId: string | null, conversationId: string | null): Promise<MemorySetting> {
+    const cacheKey = this.settingsCacheKey(userId, conversationId);
+    const cached = this.settingsCache.get(cacheKey);
+    if (cached) return cached;
+
     try {
       const collection = await this.settings();
       if (conversationId) {
         const convo = await collection.findOne({ _id: `conv:${conversationId}` as never });
         if (convo && typeof convo.enabled === 'boolean') {
-          return { enabled: convo.enabled, source: 'conversation' };
+          const setting: MemorySetting = { enabled: convo.enabled, source: 'conversation' };
+          this.settingsCache.set(cacheKey, setting);
+          return setting;
         }
       }
       if (userId) {
         const user = await collection.findOne({ _id: `user:${userId}` as never });
         if (user && typeof user.enabled === 'boolean') {
-          return { enabled: user.enabled, source: 'user' };
+          const setting: MemorySetting = { enabled: user.enabled, source: 'user' };
+          this.settingsCache.set(cacheKey, setting);
+          return setting;
         }
       }
     } catch (error) {
       logger.error({ err: error }, 'failed to read memory setting; falling back to default');
     }
-    return { enabled: this.config.memory.defaultEnabled, source: 'default' };
+    const setting: MemorySetting = { enabled: this.config.memory.defaultEnabled, source: 'default' };
+    this.settingsCache.set(cacheKey, setting);
+    return setting;
   }
 
   async setConversationMemory(
@@ -211,11 +234,15 @@ export class LibreChatStore {
       { $set: { enabled, userId, kind: 'conversation', updatedAt: new Date() } },
       { upsert: true },
     );
+    // Invalidate cache so the next read sees the new value immediately.
+    this.settingsCache.delete(this.settingsCacheKey(userId, conversationId));
   }
 
   async clearConversationMemory(conversationId: string): Promise<void> {
     const collection = await this.settings();
     await collection.deleteOne({ _id: `conv:${conversationId}` as never });
+    // Clear all cache entries that include this conversationId.
+    this.settingsCache.clear();
   }
 
   async setUserDefaultMemory(userId: string, enabled: boolean): Promise<void> {
@@ -225,6 +252,8 @@ export class LibreChatStore {
       { $set: { enabled, kind: 'user', updatedAt: new Date() } },
       { upsert: true },
     );
+    // Clear all cache entries that include this userId.
+    this.settingsCache.clear();
   }
 
   async close(): Promise<void> {
@@ -232,6 +261,10 @@ export class LibreChatStore {
     this.client = null;
     this.db = null;
     if (client) await client.close().catch(() => undefined);
+  }
+
+  get settingsCacheStats() {
+    return this.settingsCache.stats;
   }
 }
 
