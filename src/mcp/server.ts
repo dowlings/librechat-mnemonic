@@ -6,7 +6,8 @@ import type { AppConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MemoryService } from '../memory/service.js';
-import type { Telemetry, Trace } from '../telemetry.js';
+import type { Telemetry } from '../telemetry.js';
+
 /**
  * The explicit half of the integration.
  *
@@ -26,12 +27,20 @@ Relevant memories are already injected into your context automatically. Use thes
 - update_memory or forget_memory when the user corrects or retracts something previously stored.
 - list_memory when you need to see what notes exist in the vault without searching for specific terms.
 Do not call save_memory for routine conversation. Automatic extraction already handles the ordinary case, and duplicate notes make recall worse.`;
+
 export interface McpDeps {
   config: AppConfig;
   store: LibreChatStore;
   memory: MemoryService;
   telemetry: Telemetry;
 }
+
+/** Tool result shape — only the fields withTelemetry inspects. */
+interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}
+
 function buildServer(deps: McpDeps, userId: string | null, conversationId: string | null): McpServer {
   const { config, store, memory, telemetry } = deps;
   const server = new McpServer(
@@ -43,13 +52,17 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
   /**
    * Wrap a tool handler with Langfuse tracing. Creates a trace per MCP tool
    * call, named "mcp-tool" with the tool name and user/conversation context
-   * as metadata. A single span covers the tool's execution. If telemetry is
-   * disabled (NoopTelemetry), the wrapper is a pass-through — no overhead.
+   * as metadata. A single span covers the tool's execution.
+   *
+   * Most handlers report failure by returning `{ isError: true }` rather than
+   * throwing — the wrapper inspects the result to record the correct span
+   * status. If telemetry is disabled (NoopTelemetry), the wrapper is a
+   * pass-through — no overhead.
    */
-  function withTelemetry<TArgs extends Record<string, unknown>, TResult>(
+  function withTelemetry<TArgs extends Record<string, unknown>>(
     toolName: string,
-    handler: (args: TArgs, trace: Trace) => Promise<TResult>,
-  ): (args: TArgs) => Promise<TResult> {
+    handler: (args: TArgs) => Promise<ToolResult>,
+  ): (args: TArgs) => Promise<ToolResult> {
     return async (args: TArgs) => {
       const trace = telemetry.trace({
         name: 'mcp-tool',
@@ -59,11 +72,20 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       });
       const span = trace.span({ name: toolName });
       try {
-        const result = await handler(args, trace);
-        span.end({ status: 'ok' });
+        const result = await handler(args);
+        const status = result.isError === true ? 'error' : 'ok';
+        span.end({
+          status,
+          ...(result.isError === true
+            ? { error: result.content[0]?.text ?? 'unknown error' }
+            : {}),
+        });
         return result;
       } catch (error) {
-        span.end({ status: 'error', error: error instanceof Error ? error.message : String(error) });
+        span.end({
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        });
         throw error;
       } finally {
         trace.end();
@@ -105,6 +127,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       return { content: [{ type: 'text' as const, text }] };
     }),
   );
+
   server.registerTool(
     'save_memory',
     {
@@ -144,6 +167,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       return { content: [{ type: 'text' as const, text }], isError: !result.saved && result.reason === 'error' };
     }),
   );
+
   server.registerTool(
     'update_memory',
     {
@@ -170,6 +194,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     }),
   );
+
   server.registerTool(
     'forget_memory',
     {
@@ -186,6 +211,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     }),
   );
+
   server.registerTool(
     'list_memory',
     {
@@ -236,6 +262,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       return { content: [{ type: 'text' as const, text }] };
     }),
   );
+
   server.registerTool(
     'memory_status',
     {
@@ -264,6 +291,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     }),
   );
+
   server.registerTool(
     'set_memory_enabled',
     {
@@ -287,8 +315,10 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       };
     }),
   );
+
   return server;
 }
+
 export function createMcpHandler(deps: McpDeps) {
   return async function handle(req: Request, res: Response): Promise<void> {
     const userHeader = req.headers[deps.config.librechat.userHeader];
@@ -317,6 +347,7 @@ export function createMcpHandler(deps: McpDeps) {
     }
   };
 }
+
 function validateMemoryInput(input: {
   title?: string;
   content?: string;
@@ -333,11 +364,13 @@ function validateMemoryInput(input: {
   }
   return null;
 }
+
 function firstHeader(value: string | string[] | undefined): string | null {
   const raw = Array.isArray(value) ? value[0] : value;
   const trimmed = typeof raw === 'string' ? raw.trim() : '';
   return trimmed ? trimmed : null;
 }
+
 function safeJson(buffer: Buffer): unknown {
   try {
     return JSON.parse(buffer.toString('utf8'));
