@@ -6,6 +6,7 @@ import type { AppConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MemoryService } from '../memory/service.js';
+import type { Telemetry, Trace } from '../telemetry.js';
 /**
  * The explicit half of the integration.
  *
@@ -29,14 +30,47 @@ export interface McpDeps {
   config: AppConfig;
   store: LibreChatStore;
   memory: MemoryService;
+  telemetry: Telemetry;
 }
 function buildServer(deps: McpDeps, userId: string | null, conversationId: string | null): McpServer {
-  const { config, store, memory } = deps;
+  const { config, store, memory, telemetry } = deps;
   const server = new McpServer(
     { name: 'librechat-mnemonic', version: '0.1.0' },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
   const context = () => memory.resolveContext(userId, conversationId);
+
+  /**
+   * Wrap a tool handler with Langfuse tracing. Creates a trace per MCP tool
+   * call, named "mcp-tool" with the tool name and user/conversation context
+   * as metadata. A single span covers the tool's execution. If telemetry is
+   * disabled (NoopTelemetry), the wrapper is a pass-through — no overhead.
+   */
+  function withTelemetry<TArgs extends Record<string, unknown>, TResult>(
+    toolName: string,
+    handler: (args: TArgs, trace: Trace) => Promise<TResult>,
+  ): (args: TArgs) => Promise<TResult> {
+    return async (args: TArgs) => {
+      const trace = telemetry.trace({
+        name: 'mcp-tool',
+        sessionId: conversationId ?? undefined,
+        userId: userId ?? undefined,
+        metadata: { tool: toolName },
+      });
+      const span = trace.span({ name: toolName });
+      try {
+        const result = await handler(args, trace);
+        span.end({ status: 'ok' });
+        return result;
+      } catch (error) {
+        span.end({ status: 'error', error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      } finally {
+        trace.end();
+      }
+    };
+  }
+
   server.registerTool(
     'search_memory',
     {
@@ -52,7 +86,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
           .describe('Defaults to the server setting; "project" restricts to this chat project.'),
       },
     },
-    async ({ query, limit, scope }) => {
+    withTelemetry('search_memory', async ({ query, limit, scope }) => {
       const ctx = await context();
       const results = await memory.recall(ctx, query, { limit, scope });
       if (results.length === 0) {
@@ -69,7 +103,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         )
         .join('\n\n---\n\n');
       return { content: [{ type: 'text' as const, text }] };
-    },
+    }),
   );
   server.registerTool(
     'save_memory',
@@ -94,7 +128,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
           ),
       },
     },
-    async ({ title, content, tags, lifecycle, role }) => {
+    withTelemetry('save_memory', async ({ title, content, tags, lifecycle, role }) => {
       const validationError = validateMemoryInput({ title, content, tags });
       if (validationError) {
         return { content: [{ type: 'text' as const, text: validationError }], isError: true };
@@ -108,7 +142,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
           ? `Not saved: equivalent memory already exists.\n  id: ${result.id}\n  title: "${result.duplicateTitle}"\nUse update_memory to correct it, or search_memory to read it.`
           : `Not saved: ${result.reason ?? 'unknown error'}.`;
       return { content: [{ type: 'text' as const, text }], isError: !result.saved && result.reason === 'error' };
-    },
+    }),
   );
   server.registerTool(
     'update_memory',
@@ -122,7 +156,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         tags: z.array(z.string()).optional().describe('Maximum 6 tags.'),
       },
     },
-    async ({ id, title, content, tags }) => {
+    withTelemetry('update_memory', async ({ id, title, content, tags }) => {
       const validationError = validateMemoryInput({ title, content, tags });
       if (validationError) {
         return { content: [{ type: 'text' as const, text: validationError }], isError: true };
@@ -134,7 +168,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         content: [{ type: 'text' as const, text: ok ? `Updated ${id}.` : `Could not update ${id}.` }],
         isError: !ok,
       };
-    },
+    }),
   );
   server.registerTool(
     'forget_memory',
@@ -143,14 +177,14 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       description: 'Delete a memory by id. Use when the user retracts something.',
       inputSchema: { id: z.string() },
     },
-    async ({ id }) => {
+    withTelemetry('forget_memory', async ({ id }) => {
       const ctx = await context();
       const ok = await memory.forget(ctx, id);
       return {
         content: [{ type: 'text' as const, text: ok ? `Forgot ${id}.` : `Could not forget ${id}.` }],
         isError: !ok,
       };
-    },
+    }),
   );
   server.registerTool(
     'list_memory',
@@ -167,7 +201,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         limit: z.number().int().min(1).max(100).optional().describe('Maximum notes to return. Defaults to 50.'),
       },
     },
-    async ({ scope, tags, limit }) => {
+    withTelemetry('list_memory', async ({ scope, tags, limit }) => {
       const ctx = await context();
       const result = await memory.list(ctx, { scope, tags });
       const notes = Array.isArray(result)
@@ -200,7 +234,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         })
         .join('\n\n');
       return { content: [{ type: 'text' as const, text }] };
-    },
+    }),
   );
   server.registerTool(
     'memory_status',
@@ -210,7 +244,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         'Report whether automatic memory is on for this chat and which project it is scoped to.',
       inputSchema: {},
     },
-    async () => {
+    withTelemetry('memory_status', async () => {
       const ctx = await context();
       const setting = await store.getMemorySetting(userId, conversationId);
       const projectLine = ctx.projectName
@@ -228,7 +262,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
           },
         ],
       };
-    },
+    }),
   );
   server.registerTool(
     'set_memory_enabled',
@@ -238,7 +272,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         'Turn automatic recall and saving on or off for the current conversation only. Call when the user asks you to stop or start remembering here.',
       inputSchema: { enabled: z.boolean() },
     },
-    async ({ enabled }) => {
+    withTelemetry('set_memory_enabled', async ({ enabled }) => {
       if (!conversationId) {
         return {
           content: [{ type: 'text' as const, text: 'No conversation id available.' }],
@@ -251,7 +285,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
           { type: 'text' as const, text: `Automatic memory is now ${enabled ? 'on' : 'off'} for this chat.` },
         ],
       };
-    },
+    }),
   );
   return server;
 }
