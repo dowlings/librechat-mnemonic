@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 
 import type { AppConfig, UpstreamConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
-import { logger } from '../logger.js';
+import { logger } from './logger.js';
 import { extractExplicit, extractWithModel, type ModelSpec } from '../memory/extract.js';
 import type { MemoryService } from '../memory/service.js';
 import type { MemoryContext } from '../memory/types.js';
@@ -156,6 +156,20 @@ export function createProxyHandler(deps: ProxyDeps) {
       } else {
         recallSpan.end({ count: 0 });
       }
+    }
+
+    // Ensure Ollama (and other OpenAI-compatible upstreams) return token usage
+    // in the final SSE chunk of streaming responses. Without this flag the
+    // upstream omits usage entirely, so LibreChat's Langfuse integration
+    // records empty usageDetails on every GENERATION observation. Only
+    // applies to OpenAI-format streaming requests; Anthropic's Messages API
+    // always includes usage in message_delta.
+    if (format === 'openai' && outgoing.stream === true) {
+      const existing = outgoing.stream_options as Record<string, unknown> | undefined;
+      outgoing = {
+        ...outgoing,
+        stream_options: { ...(existing ?? {}), include_usage: true },
+      };
     }
 
     const outgoingBody = Buffer.from(JSON.stringify(outgoing), 'utf8');
