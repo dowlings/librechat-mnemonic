@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 
 import type { AppConfig, UpstreamConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
-import { logger } from './logger.js';
+import { logger } from '../logger.js';
 import { extractExplicit, extractWithModel, type ModelSpec } from '../memory/extract.js';
 import type { MemoryService } from '../memory/service.js';
 import type { MemoryContext } from '../memory/types.js';
