@@ -13,7 +13,7 @@ Nothing is forked or patched. This runs as one container alongside LibreChat.
 - **Scopes by LibreChat project.** A chat in the "Home Network" project reads and writes memories stamped with that project. Memories live in one global vault, partitioned by project, so nothing is siloed unless you want it to be.
 - **Stays out of the way.** `/memory off` in any chat, and that conversation stops recalling and storing.
 - **Caches aggressively.** Note bodies, recall results, and memory settings are cached with configurable TTLs to keep latency low. Cache stats are exposed via `/healthz` and Langfuse span metadata.
-- **Traces every turn.** When Langfuse credentials are set, each chat turn is traced with spans for resolve-context, recall, upstream, and memory-write.
+- **Traces and monitors usage for every turn.** When Langfuse credentials are set, every chat-completions/messages turn is traced — memory on or off, with or without a conversation id — with an `upstream` generation carrying model and token usage, plus spans for resolve-context, recall, and memory-write when memory is enabled.
 - **Exposes tools too.** An MCP endpoint lets agents search, correct, and forget memories explicitly when the automatic path is not enough.
 
 ## How it works
@@ -154,6 +154,7 @@ Everything is environment driven. Only `LIBRECHAT_MONGO_URI` and `UPSTREAMS` hav
 | `baseUrl` | yes | Provider root, such that `<baseUrl>/v1/chat/completions` is valid |
 | `api` | no | `openai` (default) or `anthropic` |
 | `apiKey` | no | Static credential replacing whatever LibreChat sends |
+| `forceIncludeUsage` | no | `true` (default). Forces `stream_options.include_usage: true` on OpenAI-format streaming requests so token usage is always reported. Set `false` for an upstream that rejects unknown request params. |
 
 ### mnemonic
 
@@ -212,7 +213,7 @@ Three independent caches keep latency low. All TTLs are configurable so you can 
 
 ### Telemetry
 
-When Langfuse credentials are set, the proxy creates its own Langfuse client and traces each augmented chat turn. Traces use `sessionId = conversationId` so they correlate with LibreChat's own Langfuse traces. Spans cover `resolve-context`, `recall`, `upstream`, and `memory-write`.
+When Langfuse credentials are set, the proxy creates its own Langfuse client and traces **every** chat-completions/messages turn, whether or not memory is enabled and whether or not LibreChat sent a conversation id (side calls such as title generation are traced too). Traces use `sessionId = conversationId` when one is present, so they correlate with LibreChat's own Langfuse traces. The `upstream` observation is a **generation** carrying the model name and token usage (prompt/completion/total), extracted from the upstream response for both OpenAI and Anthropic wire formats, streaming or not. `resolve-context`, `recall`, and `memory-write` spans are only added when memory is enabled for that turn.
 
 Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Docker Compose env vars from 1Password or your secret manager) so traces from both services appear under the same session.
 

@@ -74,6 +74,17 @@ describe('NoopTelemetry', () => {
     expect(() => span.end({ foo: 'bar' })).not.toThrow();
   });
 
+  it('generation returns a non-throwing generation object', () => {
+    const trace = telemetry.trace({ name: 'test' });
+    const generation = trace.generation({ name: 'upstream', model: 'gpt-4o' });
+    expect(generation).toBeDefined();
+    expect(typeof generation.end).toBe('function');
+    expect(() => generation.end()).not.toThrow();
+    expect(() =>
+      generation.end({ usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } }),
+    ).not.toThrow();
+  });
+
   it('trace.end does not throw', () => {
     const trace = telemetry.trace({ name: 'test' });
     expect(() => trace.end()).not.toThrow();
@@ -87,11 +98,13 @@ describe('NoopTelemetry', () => {
     await expect(telemetry.shutdown()).resolves.toBeUndefined();
   });
 
-  it('creating many traces and spans does not throw or accumulate state', () => {
+  it('creating many traces, spans, and generations does not throw or accumulate state', () => {
     for (let i = 0; i < 100; i++) {
       const trace = telemetry.trace({ name: `trace-${i}` });
       const span = trace.span({ name: `span-${i}` });
       span.end({ index: i });
+      const generation = trace.generation({ name: `gen-${i}`, model: 'gpt-4o' });
+      generation.end({ usage: { promptTokens: i, completionTokens: i, totalTokens: i * 2 } });
       trace.end();
     }
     // If we got here without throwing, the test passes.

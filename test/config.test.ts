@@ -42,6 +42,19 @@ describe('loadConfig', () => {
     }
   });
 
+  it('defaults forceIncludeUsage to true for upstreams that do not set it', () => {
+    const config = loadConfig(base as NodeJS.ProcessEnv);
+    expect(config.upstreams[0]?.forceIncludeUsage).toBe(true);
+  });
+
+  it('honours an upstream that opts out of forceIncludeUsage', () => {
+    const UPSTREAMS = JSON.stringify([
+      { name: 'openai', baseUrl: 'https://api.openai.com', api: 'openai', forceIncludeUsage: false },
+    ]);
+    const config = loadConfig({ ...base, UPSTREAMS } as NodeJS.ProcessEnv);
+    expect(config.upstreams[0]?.forceIncludeUsage).toBe(false);
+  });
+
   it('rejects duplicate upstream names', () => {
     const UPSTREAMS = JSON.stringify([
       { name: 'x', baseUrl: 'https://a.example' },
