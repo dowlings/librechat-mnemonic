@@ -13,7 +13,7 @@ Nothing is forked or patched. This runs as one container alongside LibreChat.
 - **Scopes by LibreChat project.** A chat in the "Home Network" project reads and writes memories stamped with that project. Memories live in one global vault, partitioned by project, so nothing is siloed unless you want it to be.
 - **Stays out of the way.** `/memory off` in any chat, and that conversation stops recalling and storing.
 - **Caches aggressively.** Note bodies, recall results, and memory settings are cached with configurable TTLs to keep latency low. Cache stats are exposed via `/healthz` and Langfuse span metadata.
-- **Traces and monitors usage for every turn.** When Langfuse credentials are set, every chat-completions/messages turn is traced — memory on or off, with or without a conversation id — with an `upstream` generation carrying model and token usage, plus spans for resolve-context, recall, and memory-write when memory is enabled.
+- **Traces and monitors usage for every turn that calls a model.** When Langfuse credentials are set, every chat-completions/messages turn that reaches the upstream provider is traced — memory on or off, with or without a conversation id — with an `upstream` generation carrying model and token usage, plus spans for resolve-context, recall, and memory-write when memory is enabled. `/memory` commands are answered locally and never call a model, so they produce no trace.
 - **Exposes tools too.** An MCP endpoint lets agents search, correct, and forget memories explicitly when the automatic path is not enough.
 
 ## How it works
@@ -213,7 +213,7 @@ Three independent caches keep latency low. All TTLs are configurable so you can 
 
 ### Telemetry
 
-When Langfuse credentials are set, the proxy creates its own Langfuse client and traces **every** chat-completions/messages turn, whether or not memory is enabled and whether or not LibreChat sent a conversation id (side calls such as title generation are traced too). Traces use `sessionId = conversationId` when one is present, so they correlate with LibreChat's own Langfuse traces. The `upstream` observation is a **generation** carrying the model name and token usage (prompt/completion/total), extracted from the upstream response for both OpenAI and Anthropic wire formats, streaming or not. `resolve-context`, `recall`, and `memory-write` spans are only added when memory is enabled for that turn.
+When Langfuse credentials are set, the proxy creates its own Langfuse client and traces **every** chat-completions/messages turn that calls a model, whether or not memory is enabled and whether or not LibreChat sent a conversation id (side calls such as title generation are traced too). `/memory` commands are handled locally and never reach the model, so they produce no trace. Traces use `sessionId = conversationId` when one is present, so they correlate with LibreChat's own Langfuse traces. The `upstream` observation is a **generation** carrying the model name and token usage (prompt/completion/total), extracted from the upstream response for both OpenAI and Anthropic wire formats, streaming or not. `resolve-context`, `recall`, and `memory-write` spans are only added when memory is enabled for that turn.
 
 Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Docker Compose env vars from 1Password or your secret manager) so traces from both services appear under the same session.
 
@@ -256,14 +256,14 @@ Returns JSON with service status, upstream names, telemetry status, and cache st
 
 ### Langfuse
 
-When enabled, each chat turn produces a trace with four spans:
+When enabled, each chat turn that calls a model produces a trace with three spans and one generation:
 
-| Span | What it measures |
+| Observation | What it measures |
 | --- | --- |
-| `resolve-context` | MongoDB project lookup + project directory resolution |
-| `recall` | Semantic search + note body hydration (includes cache hit/miss in metadata) |
-| `upstream` | Time spent waiting for the model provider |
-| `memory-write` | Extraction + dedupe + write (detached, ends after the response is sent) |
+| `resolve-context` (span) | MongoDB project lookup + project directory resolution |
+| `recall` (span) | Semantic search + note body hydration (includes cache hit/miss in metadata) |
+| `upstream` (generation) | Model + token usage for the upstream call |
+| `memory-write` (span) | Extraction + dedupe + write (detached, ends after the response is sent) |
 
 Filter by `sessionId` in Langfuse to see all turns for a conversation.
 

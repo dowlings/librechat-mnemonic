@@ -292,6 +292,58 @@ describe('proxy handler usage telemetry', () => {
     }
   });
 
+  it('accumulates usage across message_start and message_delta for an Anthropic streaming turn', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        'event: message_start',
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}',
+        '',
+        'event: content_block_delta',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","usage":{"output_tokens":5}}',
+        '',
+        'event: message_stop',
+        'data: {"type":"message_stop"}',
+        '',
+      ]),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { telemetry, traces, generations } = createRecordingTelemetry();
+    const app = createApp({
+      config: makeConfig(),
+      store: createMockStore(vi.fn()) as never,
+      memory: createMockMemory(vi.fn()) as never,
+      telemetry,
+    });
+
+    const { url, close } = await listen(app);
+    try {
+      const res = await originalFetch(`${url}/openai/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4',
+          stream: true,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+      expect(res.status).toBe(200);
+
+      expect(traces[0]?.metadata).toMatchObject({ format: 'anthropic', model: 'claude-sonnet-4' });
+      expect(generations).toHaveLength(1);
+      expect(generations[0]?.endArgs?.usage).toEqual({
+        promptTokens: 12,
+        completionTokens: 5,
+        totalTokens: 17,
+      });
+    } finally {
+      await close();
+    }
+  });
+
   it('logs at debug level when a streamed turn completes with no usage frame', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse(['data: {"choices":[{"delta":{"content":"Hi"}}]}', '', 'data: [DONE]', '']),

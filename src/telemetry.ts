@@ -18,7 +18,11 @@ export interface Span {
   end(metadata?: Record<string, unknown>): void;
 }
 
-/** Token counts for a single model call, in the SDK's OpenAI-shaped usage format. */
+/**
+ * Token counts for a single model call, in the SDK's OpenAI-shaped usage
+ * format. Canonical definition; re-exported from `proxy/adapters.ts` so both
+ * the wire-format adapters and the Langfuse layer share one shape.
+ */
 export interface UsageInfo {
   promptTokens?: number;
   completionTokens?: number;

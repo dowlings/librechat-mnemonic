@@ -1,4 +1,7 @@
+import type { UsageInfo } from '../telemetry.js';
 import { injectSystemMessage, messageText, type SimpleMessage } from './inject.js';
+
+export type { UsageInfo } from '../telemetry.js';
 
 /**
  * The two wire formats LibreChat can point at a custom endpoint.
@@ -8,13 +11,6 @@ import { injectSystemMessage, messageText, type SimpleMessage } from './inject.j
  * message. Everything else in LibreChat speaks OpenAI-compatible.
  */
 export type WireFormat = 'openai' | 'anthropic';
-
-/** Token counts for a single model call. */
-export interface UsageInfo {
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-}
 
 export interface ChatAdapter {
   /** Messages used to build the recall query. */
@@ -186,9 +182,12 @@ export function collectStreamText(buffer: string, adapter: ChatAdapter): StreamR
     try {
       const event = JSON.parse(payload);
       text += adapter.streamDelta(event);
-      const before = { ...usage };
+      // Compare the full serialized shape, not just prompt/completion, so a
+      // usage frame carrying only `total_tokens` (or any other subset) is
+      // still detected.
+      const before = JSON.stringify(usage);
       adapter.accumulateStreamUsage(event, usage);
-      if (usage.promptTokens !== before.promptTokens || usage.completionTokens !== before.completionTokens) {
+      if (JSON.stringify(usage) !== before) {
         sawUsage = true;
       }
     } catch {

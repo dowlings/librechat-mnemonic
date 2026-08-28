@@ -179,8 +179,8 @@ export function createProxyHandler(deps: ProxyDeps) {
     const memoryContext = context;
     const generation = trace.generation({ name: 'upstream', model });
 
-    const onComplete = (result: { text: string; usage?: UsageInfo }) => {
-      generation.end({ usage: result.usage });
+    const onComplete = (result: { text: string; usage?: UsageInfo; metadata?: Record<string, unknown> }) => {
+      generation.end({ usage: result.usage, metadata: result.metadata });
       if (!memoryContext || config.memory.writeMode === 'off' || !result.text.trim()) return;
       void writeMemories({
         config,
@@ -206,7 +206,7 @@ export function createProxyHandler(deps: ProxyDeps) {
 
 interface TapOptions {
   adapter: ChatAdapter;
-  onComplete: (result: { text: string; usage?: UsageInfo }) => void;
+  onComplete: (result: { text: string; usage?: UsageInfo; metadata?: Record<string, unknown> }) => void;
 }
 
 async function passthrough(
@@ -231,7 +231,7 @@ async function passthrough(
     if (!res.headersSent) {
       res.status(502).json({ error: { message: 'Upstream request failed', type: 'proxy_error' } });
     }
-    tap?.onComplete({ text: '' });
+    tap?.onComplete({ text: '', metadata: { level: 'ERROR', status: 'fetch_failed' } });
     return;
   }
 
@@ -244,7 +244,7 @@ async function passthrough(
     const text = await upstreamResponse.text();
     if (tap) {
       if (upstreamResponse.ok) captureNonStream(text, tap);
-      else tap.onComplete({ text: '' });
+      else tap.onComplete({ text: '', metadata: { level: 'ERROR', status: upstreamResponse.status } });
     }
     res.end(text);
     return;
@@ -278,8 +278,12 @@ async function passthrough(
   }
 
   if (!tap) return;
-  if (!upstreamResponse.ok || aborted) {
-    tap.onComplete({ text: '' });
+  if (!upstreamResponse.ok) {
+    tap.onComplete({ text: '', metadata: { level: 'ERROR', status: upstreamResponse.status } });
+    return;
+  }
+  if (aborted) {
+    tap.onComplete({ text: '', metadata: { level: 'WARNING', status: 'client_aborted' } });
     return;
   }
 
