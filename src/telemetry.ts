@@ -18,8 +18,35 @@ export interface Span {
   end(metadata?: Record<string, unknown>): void;
 }
 
+/**
+ * Token counts for a single model call, in the SDK's OpenAI-shaped usage
+ * format. Canonical definition; re-exported from `proxy/adapters.ts` so both
+ * the wire-format adapters and the Langfuse layer share one shape.
+ */
+export interface UsageInfo {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+export interface GenerationOptions {
+  name: string;
+  model?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface GenerationEndOptions {
+  usage?: UsageInfo;
+  metadata?: Record<string, unknown>;
+}
+
+export interface Generation {
+  end(options?: GenerationEndOptions): void;
+}
+
 export interface Trace {
   span(options: SpanOptions): Span;
+  generation(options: GenerationOptions): Generation;
   end(): void;
 }
 
@@ -65,6 +92,21 @@ class LangfuseTelemetry implements Telemetry {
           },
         };
       },
+      generation: (genOptions: GenerationOptions): Generation => {
+        const generation = trace.generation({
+          name: genOptions.name,
+          model: genOptions.model,
+          metadata: genOptions.metadata,
+        });
+        return {
+          end: (endOptions?: GenerationEndOptions) => {
+            generation.end({
+              metadata: endOptions?.metadata,
+              usage: endOptions?.usage,
+            });
+          },
+        };
+      },
       // Langfuse traces have no explicit end call — only spans/generations do.
       // A trace is implicitly complete once its observations stop arriving.
       end: () => {},
@@ -89,8 +131,10 @@ class NoopTelemetry implements Telemetry {
 
   trace(): Trace {
     const noopSpan: Span = { end: () => {} };
+    const noopGeneration: Generation = { end: () => {} };
     return {
       span: () => noopSpan,
+      generation: () => noopGeneration,
       end: () => {},
     };
   }

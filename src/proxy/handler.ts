@@ -7,7 +7,7 @@ import { extractExplicit, extractWithModel, type ModelSpec } from '../memory/ext
 import type { MemoryService } from '../memory/service.js';
 import type { MemoryContext } from '../memory/types.js';
 import type { Telemetry, Trace } from '../telemetry.js';
-import { adapterFor, collectStreamText, type ChatAdapter } from './adapters.js';
+import { adapterFor, collectStreamText, type ChatAdapter, type UsageInfo } from './adapters.js';
 import { parseCommand, runCommand } from './commands.js';
 import { buildMemoryBlock, buildRecallQuery, messageText } from './inject.js';
 
@@ -83,78 +83,81 @@ export function createProxyHandler(deps: ProxyDeps) {
     const userId = headerValue(req, config.librechat.userHeader);
     const conversationId = headerValue(req, config.librechat.conversationHeader);
 
+    const messages = adapter.conversation(parsed);
+    const lastUser = [...messages].reverse().find((message) => message.role === 'user');
+    const lastUserText = messageText(lastUser?.content).trim();
+    const model = typeof parsed.model === 'string' ? parsed.model : undefined;
+
     /*
      * No conversation id means this is not a user-facing chat turn: LibreChat
      * leaves {{LIBRECHAT_BODY_*}} unresolved for side calls such as title
      * generation and its own memory agent. Those must not be augmented, and
-     * must not produce memories.
+     * must not produce memories — but they still call a model, so they still
+     * get a trace and a usage-bearing generation below.
      */
-    if (!conversationId) {
-      await passthrough(req, res, targetUrl, body, upstream);
-      return;
+    let memoryEnabled = false;
+    if (conversationId) {
+      // Commands work even when memory is off, otherwise `/memory on` is unreachable.
+      const command = parseCommand(lastUserText, config.memory.commandPrefix);
+      if (command) {
+        const commandContext = await memory.resolveContext(userId, conversationId);
+        const result = await runCommand(command, commandContext, { config, store, memory });
+        sendSynthetic(res, result.reply, parsed, format);
+        return;
+      }
+
+      const setting = await store.getMemorySetting(userId, conversationId);
+      memoryEnabled = setting.enabled;
     }
 
-    const messages = adapter.conversation(parsed);
-    const lastUser = [...messages].reverse().find((message) => message.role === 'user');
-    const lastUserText = messageText(lastUser?.content).trim();
-
-    // Commands work even when memory is off, otherwise `/memory on` is unreachable.
-    const command = parseCommand(lastUserText, config.memory.commandPrefix);
-    if (command) {
-      const context = await memory.resolveContext(userId, conversationId);
-      const result = await runCommand(command, context, { config, store, memory });
-      sendSynthetic(res, result.reply, parsed, format);
-      return;
-    }
-
-    const setting = await store.getMemorySetting(userId, conversationId);
-    if (!setting.enabled) {
-      await passthrough(req, res, targetUrl, body, upstream);
-      return;
-    }
-
-    // ── Telemetry: one trace per augmented chat turn ────────────────────────
+    // ── Telemetry: one trace per chat turn, memory on/off, with or without a
+    // conversation id ────────────────────────────────────────────────────────
     const trace = telemetry.trace({
       name: 'chat-turn',
-      sessionId: conversationId,
+      sessionId: conversationId ?? undefined,
       userId: userId ?? undefined,
       metadata: {
         upstream: upstream.name,
-        model: typeof parsed.model === 'string' ? parsed.model : undefined,
+        model,
         format,
+        memoryEnabled,
+        hasConversation: !!conversationId,
       },
     });
 
-    // One retry: on the first turn of a brand new chat the conversation
-    // document may not be written yet.
-    const ctxSpan = trace.span({ name: 'resolve-context' });
-    const context = await memory.resolveContext(userId, conversationId, { retries: 1 });
-    ctxSpan.end({ project: context.projectName });
-
     let outgoing = parsed;
-    if (config.memory.recallEnabled) {
-      const recallSpan = trace.span({ name: 'recall' });
-      const query = buildRecallQuery(messages, {
-        messageCount: config.memory.queryMessageCount,
-        maxChars: config.memory.queryMaxChars,
-      });
-      if (query) {
-        const recalled = await memory.recall(context, query);
-        const block = buildMemoryBlock(recalled, context, config.memory.maxContextChars);
-        recallSpan.end({
-          count: recalled.length,
-          hasBlock: !!block,
-          cacheStats: memory.cacheStats.recall,
+    let context: MemoryContext | undefined;
+    if (conversationId && memoryEnabled) {
+      // One retry: on the first turn of a brand new chat the conversation
+      // document may not be written yet.
+      const ctxSpan = trace.span({ name: 'resolve-context' });
+      context = await memory.resolveContext(userId, conversationId, { retries: 1 });
+      ctxSpan.end({ project: context.projectName });
+
+      if (config.memory.recallEnabled) {
+        const recallSpan = trace.span({ name: 'recall' });
+        const query = buildRecallQuery(messages, {
+          messageCount: config.memory.queryMessageCount,
+          maxChars: config.memory.queryMaxChars,
         });
-        if (block) {
-          outgoing = adapter.inject(parsed, block);
-          logger.debug(
-            { conversationId, project: context.projectName, count: recalled.length },
-            'injected recalled memories',
-          );
+        if (query) {
+          const recalled = await memory.recall(context, query);
+          const block = buildMemoryBlock(recalled, context, config.memory.maxContextChars);
+          recallSpan.end({
+            count: recalled.length,
+            hasBlock: !!block,
+            cacheStats: memory.cacheStats.recall,
+          });
+          if (block) {
+            outgoing = adapter.inject(parsed, block);
+            logger.debug(
+              { conversationId, project: context.projectName, count: recalled.length },
+              'injected recalled memories',
+            );
+          }
+        } else {
+          recallSpan.end({ count: 0 });
         }
-      } else {
-        recallSpan.end({ count: 0 });
       }
     }
 
@@ -164,7 +167,7 @@ export function createProxyHandler(deps: ProxyDeps) {
     // records empty usageDetails on every GENERATION observation. Only
     // applies to OpenAI-format streaming requests; Anthropic's Messages API
     // always includes usage in message_delta.
-    if (format === 'openai' && outgoing.stream === true) {
+    if (format === 'openai' && outgoing.stream === true && upstream.forceIncludeUsage) {
       const existing = outgoing.stream_options as Record<string, unknown> | undefined;
       outgoing = {
         ...outgoing,
@@ -173,26 +176,27 @@ export function createProxyHandler(deps: ProxyDeps) {
     }
 
     const outgoingBody = Buffer.from(JSON.stringify(outgoing), 'utf8');
+    const memoryContext = context;
+    const generation = trace.generation({ name: 'upstream', model });
 
-    const onAssistantText = (text: string) => {
-      if (config.memory.writeMode === 'off') return;
+    const onComplete = (result: { text: string; usage?: UsageInfo; metadata?: Record<string, unknown> }) => {
+      generation.end({ usage: result.usage, metadata: result.metadata });
+      if (!memoryContext || config.memory.writeMode === 'off' || !result.text.trim()) return;
       void writeMemories({
         config,
         memory,
-        context,
+        context: memoryContext,
         adapter,
         upstream,
         req,
-        model: typeof parsed.model === 'string' ? parsed.model : undefined,
+        model,
         userText: lastUserText,
-        assistantText: text,
+        assistantText: result.text,
         trace,
       });
     };
 
-    const upstreamSpan = trace.span({ name: 'upstream' });
-    await passthrough(req, res, targetUrl, outgoingBody, upstream, { adapter, onAssistantText });
-    upstreamSpan.end();
+    await passthrough(req, res, targetUrl, outgoingBody, upstream, { adapter, onComplete });
 
     // End the trace now that the response is sent. The write span may still be
     // in flight (writeMemories is detached); Langfuse handles late span ends.
@@ -202,7 +206,7 @@ export function createProxyHandler(deps: ProxyDeps) {
 
 interface TapOptions {
   adapter: ChatAdapter;
-  onAssistantText: (text: string) => void;
+  onComplete: (result: { text: string; usage?: UsageInfo; metadata?: Record<string, unknown> }) => void;
 }
 
 async function passthrough(
@@ -227,6 +231,7 @@ async function passthrough(
     if (!res.headersSent) {
       res.status(502).json({ error: { message: 'Upstream request failed', type: 'proxy_error' } });
     }
+    tap?.onComplete({ text: '', metadata: { level: 'ERROR', status: 'fetch_failed' } });
     return;
   }
 
@@ -237,7 +242,10 @@ async function passthrough(
 
   if (!upstreamResponse.body) {
     const text = await upstreamResponse.text();
-    if (tap && upstreamResponse.ok) captureNonStream(text, tap);
+    if (tap) {
+      if (upstreamResponse.ok) captureNonStream(text, tap);
+      else tap.onComplete({ text: '', metadata: { level: 'ERROR', status: upstreamResponse.status } });
+    }
     res.end(text);
     return;
   }
@@ -269,23 +277,38 @@ async function passthrough(
     res.end();
   }
 
-  if (!tap || !upstreamResponse.ok || aborted) return;
+  if (!tap) return;
+  if (!upstreamResponse.ok) {
+    tap.onComplete({ text: '', metadata: { level: 'ERROR', status: upstreamResponse.status } });
+    return;
+  }
+  if (aborted) {
+    tap.onComplete({ text: '', metadata: { level: 'WARNING', status: 'client_aborted' } });
+    return;
+  }
 
   const raw = chunks.join('');
-  const text = isStream ? collectStreamText(raw, tap.adapter) : safeNonStreamText(raw, tap.adapter);
-  if (text.trim()) tap.onAssistantText(text);
+  if (isStream) {
+    const { text, usage } = collectStreamText(raw, tap.adapter);
+    if (!usage) {
+      logger.debug({ upstream: upstream.name }, 'streamed turn completed with no usage frame');
+    }
+    tap.onComplete({ text, usage });
+  } else {
+    tap.onComplete(safeNonStream(raw, tap.adapter));
+  }
 }
 
 function captureNonStream(text: string, tap: TapOptions): void {
-  const extracted = safeNonStreamText(text, tap.adapter);
-  if (extracted.trim()) tap.onAssistantText(extracted);
+  tap.onComplete(safeNonStream(text, tap.adapter));
 }
 
-function safeNonStreamText(raw: string, adapter: ChatAdapter): string {
+function safeNonStream(raw: string, adapter: ChatAdapter): { text: string; usage?: UsageInfo } {
   try {
-    return adapter.responseText(JSON.parse(raw));
+    const json = JSON.parse(raw);
+    return { text: adapter.responseText(json), usage: adapter.responseUsage(json) };
   } catch {
-    return '';
+    return { text: '' };
   }
 }
 

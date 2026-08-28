@@ -46,6 +46,12 @@ export const upstreamSchema = z.object({
    * LibreChat sends, which is the usual arrangement.
    */
   apiKey: z.string().optional(),
+  /**
+   * Force `stream_options.include_usage: true` on OpenAI-format streaming
+   * requests to this upstream, so the terminal SSE chunk always carries token
+   * usage. Disable for an upstream that rejects unknown request params.
+   */
+  forceIncludeUsage: z.boolean().optional().default(true),
 });
 
 export type UpstreamConfig = z.infer<typeof upstreamSchema>;

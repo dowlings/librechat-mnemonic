@@ -35,6 +35,30 @@ describe('openai adapter', () => {
     expect(openaiAdapter.streamDelta({ choices: [{ delta: { content: 'ab' } }] })).toBe('ab');
     expect(openaiAdapter.streamDelta({ choices: [{ delta: {} }] })).toBe('');
   });
+
+  it('reads usage from a non-streaming response', () => {
+    expect(
+      openaiAdapter.responseUsage({
+        choices: [{ message: { role: 'assistant', content: 'hi' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+    ).toEqual({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+  });
+
+  it('returns undefined usage when the response has none', () => {
+    expect(openaiAdapter.responseUsage({ choices: [] })).toBeUndefined();
+  });
+
+  it('accumulates usage from the terminal usage-bearing stream chunk', () => {
+    const acc = {};
+    openaiAdapter.accumulateStreamUsage({ choices: [{ delta: { content: 'x' } }] }, acc);
+    expect(acc).toEqual({});
+    openaiAdapter.accumulateStreamUsage(
+      { choices: [], usage: { prompt_tokens: 3, completion_tokens: 7, total_tokens: 10 } },
+      acc,
+    );
+    expect(acc).toEqual({ promptTokens: 3, completionTokens: 7, totalTokens: 10 });
+  });
 });
 
 describe('anthropic adapter', () => {
@@ -80,6 +104,32 @@ describe('anthropic adapter', () => {
     ).toBe('ab');
     expect(anthropicAdapter.streamDelta({ type: 'message_start' })).toBe('');
   });
+
+  it('reads usage from a non-streaming response', () => {
+    expect(
+      anthropicAdapter.responseUsage({
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 12, output_tokens: 8 },
+      }),
+    ).toEqual({ promptTokens: 12, completionTokens: 8, totalTokens: 20 });
+  });
+
+  it('returns undefined usage when the response has none', () => {
+    expect(anthropicAdapter.responseUsage({ content: [] })).toBeUndefined();
+  });
+
+  it('accumulates input tokens from message_start and output tokens from message_delta', () => {
+    // message_start's own output_tokens is a meaningless placeholder (generation
+    // hasn't happened yet) so it must not overwrite a later message_delta count.
+    const acc = {};
+    anthropicAdapter.accumulateStreamUsage(
+      { type: 'message_start', message: { usage: { input_tokens: 12, output_tokens: 0 } } },
+      acc,
+    );
+    expect(acc).toEqual({ promptTokens: 12 });
+    anthropicAdapter.accumulateStreamUsage({ type: 'message_delta', usage: { output_tokens: 9 } }, acc);
+    expect(acc).toEqual({ promptTokens: 12, completionTokens: 9, totalTokens: 21 });
+  });
 });
 
 describe('collectStreamText', () => {
@@ -92,7 +142,7 @@ describe('collectStreamText', () => {
       'data: [DONE]',
       '',
     ].join('\n');
-    expect(collectStreamText(sse, openaiAdapter)).toBe('Hello world');
+    expect(collectStreamText(sse, openaiAdapter)).toEqual({ text: 'Hello world', usage: undefined });
   });
 
   it('reassembles an anthropic SSE body including event lines', () => {
@@ -104,12 +154,45 @@ describe('collectStreamText', () => {
       'data: {"type":"message_stop"}',
       '',
     ].join('\n');
-    expect(collectStreamText(sse, anthropicAdapter)).toBe('Hi');
+    expect(collectStreamText(sse, anthropicAdapter)).toEqual({ text: 'Hi', usage: undefined });
   });
 
   it('ignores truncated or malformed frames rather than throwing', () => {
     const sse = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[{"del';
-    expect(collectStreamText(sse, openaiAdapter)).toBe('ok');
+    expect(collectStreamText(sse, openaiAdapter)).toEqual({ text: 'ok', usage: undefined });
+  });
+
+  it('captures usage from the terminal openai usage chunk', () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+      '',
+      'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    expect(collectStreamText(sse, openaiAdapter)).toEqual({
+      text: 'Hello',
+      usage: { promptTokens: 4, completionTokens: 1, totalTokens: 5 },
+    });
+  });
+
+  it('captures usage split across anthropic message_start and message_delta', () => {
+    const sse = [
+      'event: message_start',
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1}}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}',
+      '',
+      'event: message_delta',
+      'data: {"type":"message_delta","usage":{"output_tokens":3}}',
+      '',
+    ].join('\n');
+    expect(collectStreamText(sse, anthropicAdapter)).toEqual({
+      text: 'Hi',
+      usage: { promptTokens: 12, completionTokens: 3, totalTokens: 15 },
+    });
   });
 });
 
