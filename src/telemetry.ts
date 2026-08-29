@@ -161,7 +161,10 @@ export class LangfuseTelemetry implements Telemetry {
   }
 
   trace(options: TraceOptions): Trace {
-    const root = startObservation(options.name, { metadata: options.metadata });
+    // Metadata is written once, canonically, via traceAttributes below as
+    // TRACE_METADATA.* — passing it to startObservation too would also stamp
+    // it as OBSERVATION_METADATA.* on the same root span.
+    const root = startObservation(options.name);
     root.otelSpan.setAttributes(traceAttributes(options));
     return wrapTrace(root);
   }

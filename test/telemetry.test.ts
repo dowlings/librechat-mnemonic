@@ -169,6 +169,20 @@ describe('LangfuseTelemetry', () => {
     );
   });
 
+  it('does not duplicate trace metadata as observation metadata on the root span', () => {
+    const trace = telemetry.trace({
+      name: 'chat-turn',
+      metadata: { memory: true },
+    });
+    trace.end();
+
+    const { attributes } = byName('chat-turn');
+    expect(attributes[`${LangfuseOtelSpanAttributes.TRACE_METADATA}.memory`]).toBe('true');
+    expect(
+      attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.memory`],
+    ).toBeUndefined();
+  });
+
   it('omits session and user attributes when not supplied', () => {
     const trace = telemetry.trace({ name: 'mcp-tool' });
     trace.end();
