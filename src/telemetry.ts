@@ -107,9 +107,9 @@ class LangfuseTelemetry implements Telemetry {
           },
         };
       },
-      // Langfuse traces have no explicit end call — only spans/generations do.
-      // A trace is implicitly complete once its observations stop arriving.
-      end: () => {},
+      end: () => {
+        trace.end();
+      },
     };
   }
 
