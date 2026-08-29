@@ -56,6 +56,7 @@ const baseConfig: AppConfig = {
   telemetry: {
     enabled: false,
     baseUrl: 'https://cloud.langfuse.com',
+    environment: 'test',
   },
 };
 

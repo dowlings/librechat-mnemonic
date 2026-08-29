@@ -116,7 +116,7 @@ const config = {
     settingsTtlMs: 30_000,
     maxEntries: 5_000,
   },
-  telemetry: { enabled: false, baseUrl: 'https://cloud.langfuse.com' },
+  telemetry: { enabled: false, baseUrl: 'https://cloud.langfuse.com', environment: 'test' },
 } as AppConfig;
 
 const PROJECT_ID = '507f1f77bcf86cd799439011';

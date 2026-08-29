@@ -60,6 +60,8 @@ services:
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      # Must match LibreChat's Langfuse environment so both sets of traces group together.
+      LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-production}
 
       LOG_LEVEL: info
     volumes:

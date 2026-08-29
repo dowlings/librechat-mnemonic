@@ -42,7 +42,8 @@ interface ToolResult {
   isError?: boolean;
 }
 
-function buildServer(
+/** Exported for tests; production code goes through `createMcpHandler`. */
+export function buildServer(
   deps: McpDeps,
   userId: string | null,
   conversationId: string | null,
@@ -57,7 +58,10 @@ function buildServer(
   /**
    * Wrap a tool handler with Langfuse tracing. Creates a trace per MCP tool
    * call, named "mcp-tool" with the tool name and user/conversation context
-   * as metadata. A single span covers the tool's execution.
+   * as metadata. A single span covers the tool's execution. Both the trace and
+   * the span carry the tool arguments as input and the tool result as output,
+   * so a Langfuse trace shows what was asked and what came back rather than
+   * just the tool name.
    *
    * Most handlers report failure by returning `{ isError: true }` rather than
    * throwing — the wrapper inspects the result to record the correct span
@@ -74,24 +78,35 @@ function buildServer(
         sessionId: conversationId ?? undefined,
         userId: userId ?? undefined,
         metadata: { tool: toolName },
+        input: args,
       });
-      const span = trace.span({ name: toolName });
+      const span = trace.span({ name: toolName, input: args });
+      let output: unknown;
       try {
         const result = await handler(args);
-        const status = result.isError === true ? 'error' : 'ok';
+        output = toolOutput(result);
         span.end({
-          status,
-          ...(result.isError === true ? { error: result.content[0]?.text ?? 'unknown error' } : {}),
+          metadata: {
+            status: result.isError === true ? 'error' : 'ok',
+            ...(result.isError === true
+              ? { error: result.content[0]?.text ?? 'unknown error' }
+              : {}),
+          },
+          output,
         });
         return result;
       } catch (error) {
+        output = { error: error instanceof Error ? error.message : String(error) };
         span.end({
-          status: 'error',
-          error: error instanceof Error ? error.message : String(error),
+          metadata: {
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+          },
+          output,
         });
         throw error;
       } finally {
-        trace.end();
+        trace.end({ output });
       }
     };
   }
@@ -369,6 +384,20 @@ export function createMcpHandler(deps: McpDeps) {
       }
     }
   };
+}
+
+/**
+ * The readable half of a tool result. Langfuse renders a plain string far
+ * better than the `{ content: [{ type, text }] }` envelope, so collapse text
+ * parts and fall back to the whole result for anything unexpected.
+ */
+function toolOutput(result: ToolResult): unknown {
+  if (!Array.isArray(result.content)) return result;
+  const texts = result.content
+    .filter((part) => part?.type === 'text')
+    .map((part) => part.text)
+    .filter((text) => typeof text === 'string');
+  return texts.length > 0 ? texts.join('\n') : result;
 }
 
 function validateMemoryInput(input: {
