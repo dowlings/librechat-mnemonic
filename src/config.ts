@@ -75,10 +75,7 @@ const rawSchema = z.object({
   LIBRECHAT_MONGO_URI: z.string().min(1),
   LIBRECHAT_MONGO_DB: z.string().optional(),
   LIBRECHAT_USER_HEADER: z.string().optional().default('x-librechat-user-id'),
-  LIBRECHAT_CONVERSATION_HEADER: z
-    .string()
-    .optional()
-    .default('x-librechat-conversation-id'),
+  LIBRECHAT_CONVERSATION_HEADER: z.string().optional().default('x-librechat-conversation-id'),
 
   // ── Upstreams ──────────────────────────────────────────────────────────────
   UPSTREAMS: z.string().optional().default('[]'),
@@ -274,8 +271,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       vaultPath: raw.MNEMONIC_VAULT_PATH,
       projectRoot: raw.MNEMONIC_PROJECT_ROOT,
       // Creating directories only makes sense when mnemonic shares our filesystem.
-      createProjectDirs:
-        raw.MNEMONIC_MODE === 'remote' ? false : raw.MNEMONIC_PROJECT_ROOT_CREATE,
+      createProjectDirs: raw.MNEMONIC_MODE === 'remote' ? false : raw.MNEMONIC_PROJECT_ROOT_CREATE,
       writeScope: raw.MNEMONIC_WRITE_SCOPE,
       recallScope: raw.MNEMONIC_RECALL_SCOPE,
       recallLimit: raw.MNEMONIC_RECALL_LIMIT,

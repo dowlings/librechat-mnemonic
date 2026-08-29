@@ -42,11 +42,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     server.close();
-    await Promise.allSettled([
-      telemetry.flush(),
-      mnemonic.close(),
-      store.close(),
-    ]);
+    await Promise.allSettled([telemetry.flush(), mnemonic.close(), store.close()]);
     process.exit(0);
   };
 

@@ -3,11 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MemoryService } from '../src/memory/service.js';
 import type { AppConfig } from '../src/config.js';
 import type { MnemonicResult } from '../src/mnemonic/client.js';
-import type {
-  GetResponse,
-  RecallResponse,
-  RememberResponse,
-} from '../src/memory/types.js';
+import type { GetResponse, RecallResponse, RememberResponse } from '../src/memory/types.js';
 
 // ── Test fixtures ───────────────────────────────────────────────────────────
 
@@ -77,19 +73,21 @@ const context = {
 // ── Mock helpers ────────────────────────────────────────────────────────────
 
 /** A minimal mock for MnemonicClient that records calls and returns canned data. */
-function createMockMnemonic(opts: {
-  recallResults?: Array<{
-    id: string;
-    title: string;
-    score: number;
-    boosted?: number;
-    tags?: string[];
-    vault?: string;
-    project?: { id: string; name: string };
-  }>;
-  rememberResult?: RememberResponse;
-  forgetShouldFail?: boolean;
-} = {}) {
+function createMockMnemonic(
+  opts: {
+    recallResults?: Array<{
+      id: string;
+      title: string;
+      score: number;
+      boosted?: number;
+      tags?: string[];
+      vault?: string;
+      project?: { id: string; name: string };
+    }>;
+    rememberResult?: RememberResponse;
+    forgetShouldFail?: boolean;
+  } = {},
+) {
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
 
   const mock = {
@@ -187,9 +185,7 @@ describe('MemoryService.save — dedupe behaviour', () => {
 
   it('explicit save replaces a single auto-extracted fragment', async () => {
     const mnemonic = createMockMnemonic({
-      recallResults: [
-        makeResult('auto-1', 'Auto fragment about Ollama', 0.88, ['auto-extracted']),
-      ],
+      recallResults: [makeResult('auto-1', 'Auto fragment about Ollama', 0.88, ['auto-extracted'])],
     });
     const store = createMockStore();
     const service = new MemoryService(baseConfig, mnemonic as never, store as never);
@@ -264,7 +260,7 @@ describe('MemoryService.save — dedupe behaviour', () => {
     const mnemonic = createMockMnemonic({
       recallResults: [
         makeResult('auto-1', 'Ollama embeddings snippet', 0.86, ['auto-extracted']),
-        makeResult('explicit-1', 'Decision: use Ollama for embeddings', 0.90, ['librechat']),
+        makeResult('explicit-1', 'Decision: use Ollama for embeddings', 0.9, ['librechat']),
       ],
     });
     const store = createMockStore();
@@ -289,9 +285,7 @@ describe('MemoryService.save — dedupe behaviour', () => {
 
   it('auto-extracted save is blocked by an existing auto-extracted duplicate', async () => {
     const mnemonic = createMockMnemonic({
-      recallResults: [
-        makeResult('auto-1', 'Ollama embeddings snippet', 0.88, ['auto-extracted']),
-      ],
+      recallResults: [makeResult('auto-1', 'Ollama embeddings snippet', 0.88, ['auto-extracted'])],
     });
     const store = createMockStore();
     const service = new MemoryService(baseConfig, mnemonic as never, store as never);
@@ -335,9 +329,7 @@ describe('MemoryService.save — dedupe behaviour', () => {
 
   it('continues saving if forget fails (failed forget is a smaller problem than a lost explicit save)', async () => {
     const mnemonic = createMockMnemonic({
-      recallResults: [
-        makeResult('auto-1', 'Ollama embeddings snippet', 0.87, ['auto-extracted']),
-      ],
+      recallResults: [makeResult('auto-1', 'Ollama embeddings snippet', 0.87, ['auto-extracted'])],
       forgetShouldFail: true,
     });
     const store = createMockStore();

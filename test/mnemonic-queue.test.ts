@@ -85,7 +85,9 @@ function createMockMnemonicClient(delays: { read?: number; write?: number } = {}
   };
 
   // Access the private method via prototype hacking
-  (client as unknown as { connect: () => Promise<unknown> }).connect = vi.fn(async () => fakeClient);
+  (client as unknown as { connect: () => Promise<unknown> }).connect = vi.fn(
+    async () => fakeClient,
+  );
 
   return { client, fakeClient };
 }
@@ -94,7 +96,7 @@ describe('MnemonicClient — queue split', () => {
   it('read does not wait behind a slow write', async () => {
     const { client } = createMockMnemonicClient({
       write: 200, // slow write
-      read: 10,   // fast read
+      read: 10, // fast read
     });
 
     // Start a write (200ms)

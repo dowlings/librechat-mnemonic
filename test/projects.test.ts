@@ -4,7 +4,11 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { projectDirName, resolveProjectDir, resetProjectDirCache } from '../src/mnemonic/projects.js';
+import {
+  projectDirName,
+  resolveProjectDir,
+  resetProjectDirCache,
+} from '../src/mnemonic/projects.js';
 
 describe('projectDirName', () => {
   it('keeps a readable name, because mnemonic uses the basename as the project name', () => {

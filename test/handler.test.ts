@@ -6,7 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../src/config.js';
 import { logger } from '../src/logger.js';
 import { createApp } from '../src/server.js';
-import type { Generation, GenerationEndOptions, GenerationOptions, Telemetry, TraceOptions } from '../src/telemetry.js';
+import type {
+  Generation,
+  GenerationEndOptions,
+  GenerationOptions,
+  Telemetry,
+  TraceOptions,
+} from '../src/telemetry.js';
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -19,7 +25,12 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       conversationHeader: 'x-librechat-conversation-id',
     },
     upstreams: [
-      { name: 'openai', baseUrl: 'https://upstream.example', api: 'openai', forceIncludeUsage: true },
+      {
+        name: 'openai',
+        baseUrl: 'https://upstream.example',
+        api: 'openai',
+        forceIncludeUsage: true,
+      },
     ],
     mnemonic: {
       mode: 'spawn',
@@ -114,7 +125,9 @@ function createMockMemory(resolveContext: ReturnType<typeof vi.fn>) {
   };
 }
 
-async function listen(app: ReturnType<typeof createApp>): Promise<{ url: string; close: () => Promise<void> }> {
+async function listen(
+  app: ReturnType<typeof createApp>,
+): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as AddressInfo;
@@ -293,22 +306,24 @@ describe('proxy handler usage telemetry', () => {
   });
 
   it('accumulates usage across message_start and message_delta for an Anthropic streaming turn', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      sseResponse([
-        'event: message_start',
-        'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}',
-        '',
-        'event: content_block_delta',
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}',
-        '',
-        'event: message_delta',
-        'data: {"type":"message_delta","usage":{"output_tokens":5}}',
-        '',
-        'event: message_stop',
-        'data: {"type":"message_stop"}',
-        '',
-      ]),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        sseResponse([
+          'event: message_start',
+          'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}',
+          '',
+          'event: content_block_delta',
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}',
+          '',
+          'event: message_delta',
+          'data: {"type":"message_delta","usage":{"output_tokens":5}}',
+          '',
+          'event: message_stop',
+          'data: {"type":"message_stop"}',
+          '',
+        ]),
+      );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const { telemetry, traces, generations } = createRecordingTelemetry();
@@ -345,9 +360,11 @@ describe('proxy handler usage telemetry', () => {
   });
 
   it('logs at debug level when a streamed turn completes with no usage frame', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      sseResponse(['data: {"choices":[{"delta":{"content":"Hi"}}]}', '', 'data: [DONE]', '']),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        sseResponse(['data: {"choices":[{"delta":{"content":"Hi"}}]}', '', 'data: [DONE]', '']),
+      );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     const debugSpy = vi.spyOn(logger, 'debug');
 

@@ -179,7 +179,11 @@ export function createProxyHandler(deps: ProxyDeps) {
     const memoryContext = context;
     const generation = trace.generation({ name: 'upstream', model });
 
-    const onComplete = (result: { text: string; usage?: UsageInfo; metadata?: Record<string, unknown> }) => {
+    const onComplete = (result: {
+      text: string;
+      usage?: UsageInfo;
+      metadata?: Record<string, unknown>;
+    }) => {
       generation.end({ usage: result.usage, metadata: result.metadata });
       if (!memoryContext || config.memory.writeMode === 'off' || !result.text.trim()) return;
       void writeMemories({
@@ -206,7 +210,11 @@ export function createProxyHandler(deps: ProxyDeps) {
 
 interface TapOptions {
   adapter: ChatAdapter;
-  onComplete: (result: { text: string; usage?: UsageInfo; metadata?: Record<string, unknown> }) => void;
+  onComplete: (result: {
+    text: string;
+    usage?: UsageInfo;
+    metadata?: Record<string, unknown>;
+  }) => void;
 }
 
 async function passthrough(
@@ -244,7 +252,8 @@ async function passthrough(
     const text = await upstreamResponse.text();
     if (tap) {
       if (upstreamResponse.ok) captureNonStream(text, tap);
-      else tap.onComplete({ text: '', metadata: { level: 'ERROR', status: upstreamResponse.status } });
+      else
+        tap.onComplete({ text: '', metadata: { level: 'ERROR', status: upstreamResponse.status } });
     }
     res.end(text);
     return;
@@ -508,9 +517,7 @@ function extractionSpec(args: WriteArgs): ModelSpec {
       api: 'openai',
       baseUrl: config.extract.baseUrl,
       model: config.extract.model,
-      headers: config.extract.apiKey
-        ? { authorization: `Bearer ${config.extract.apiKey}` }
-        : {},
+      headers: config.extract.apiKey ? { authorization: `Bearer ${config.extract.apiKey}` } : {},
     };
   }
 

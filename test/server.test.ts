@@ -63,7 +63,12 @@ const baseConfig: AppConfig = {
   },
 };
 
-function createMockStore(settingsStats: { hits: number; misses: number; size: number; hitRate: number }) {
+function createMockStore(settingsStats: {
+  hits: number;
+  misses: number;
+  size: number;
+  hitRate: number;
+}) {
   return { settingsCacheStats: settingsStats };
 }
 
@@ -74,7 +79,9 @@ function createMockMemory(cacheStats: {
   return { cacheStats };
 }
 
-async function listen(app: ReturnType<typeof createApp>): Promise<{ url: string; close: () => Promise<void> }> {
+async function listen(
+  app: ReturnType<typeof createApp>,
+): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as AddressInfo;

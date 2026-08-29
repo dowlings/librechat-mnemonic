@@ -127,7 +127,10 @@ describe('anthropic adapter', () => {
       acc,
     );
     expect(acc).toEqual({ promptTokens: 12 });
-    anthropicAdapter.accumulateStreamUsage({ type: 'message_delta', usage: { output_tokens: 9 } }, acc);
+    anthropicAdapter.accumulateStreamUsage(
+      { type: 'message_delta', usage: { output_tokens: 9 } },
+      acc,
+    );
     expect(acc).toEqual({ promptTokens: 12, completionTokens: 9, totalTokens: 21 });
   });
 });
@@ -142,7 +145,10 @@ describe('collectStreamText', () => {
       'data: [DONE]',
       '',
     ].join('\n');
-    expect(collectStreamText(sse, openaiAdapter)).toEqual({ text: 'Hello world', usage: undefined });
+    expect(collectStreamText(sse, openaiAdapter)).toEqual({
+      text: 'Hello world',
+      usage: undefined,
+    });
   });
 
   it('reassembles an anthropic SSE body including event lines', () => {

@@ -16,10 +16,7 @@ export interface CommandResult {
   /** Markdown returned to the user as the assistant's reply. */
   reply: string;
 }
-export function parseCommand(
-  text: string,
-  prefix: string,
-): { name: string; rest: string } | null {
+export function parseCommand(text: string, prefix: string): { name: string; rest: string } | null {
   const trimmed = text.trim();
   if (!trimmed.toLowerCase().startsWith(prefix.toLowerCase())) return null;
   const remainder = trimmed.slice(prefix.length);
@@ -109,10 +106,14 @@ export async function runCommand(
         role: 'context',
       });
       if (result.saved) {
-        return { reply: `Saved as \`${result.id}\`${context.projectName ? ` under **${context.projectName}**` : ''}.` };
+        return {
+          reply: `Saved as \`${result.id}\`${context.projectName ? ` under **${context.projectName}**` : ''}.`,
+        };
       }
       if (result.reason === 'duplicate') {
-        return { reply: `Already known, see \`${result.id}\`${result.duplicateTitle ? ` (${result.duplicateTitle})` : ''}. Nothing new was stored.` };
+        return {
+          reply: `Already known, see \`${result.id}\`${result.duplicateTitle ? ` (${result.duplicateTitle})` : ''}. Nothing new was stored.`,
+        };
       }
       return { reply: `Could not save that memory (${result.reason ?? 'unknown error'}).` };
     }
@@ -154,7 +155,8 @@ export async function runCommand(
             const id = note.id ?? '';
             const title = note.title ?? '';
             const project = note.projectName ? ` · ${note.projectName}` : '';
-            const tags = Array.isArray(note.tags) && note.tags.length > 0 ? ` · ${note.tags.join(', ')}` : '';
+            const tags =
+              Array.isArray(note.tags) && note.tags.length > 0 ? ` · ${note.tags.join(', ')}` : '';
             return `- **${title}** \`${id}\`${project}${tags}`;
           }),
         ].join('\n'),
@@ -163,7 +165,9 @@ export async function runCommand(
     case 'forget': {
       if (!command.rest) return { reply: `Usage: \`${prefix} forget <memory id>\`` };
       const ok = await memory.forget(context, command.rest);
-      return { reply: ok ? `Forgot \`${command.rest}\`.` : `Could not forget \`${command.rest}\`.` };
+      return {
+        reply: ok ? `Forgot \`${command.rest}\`.` : `Could not forget \`${command.rest}\`.`,
+      };
     }
     default:
       return {

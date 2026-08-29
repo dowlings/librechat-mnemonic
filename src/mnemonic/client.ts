@@ -142,10 +142,7 @@ export class MnemonicClient {
    * note bodies, for `recall`) in the text content, and different callers here
    * want different halves.
    */
-  async call<T = unknown>(
-    tool: string,
-    args: Record<string, unknown>,
-  ): Promise<MnemonicResult<T>> {
+  async call<T = unknown>(tool: string, args: Record<string, unknown>): Promise<MnemonicResult<T>> {
     const isWrite = MnemonicClient.WRITE_TOOLS.has(tool);
     return this.serialise(async () => {
       const client = await this.connect();
