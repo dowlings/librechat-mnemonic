@@ -178,9 +178,7 @@ describe('LangfuseTelemetry', () => {
 
     const { attributes } = byName('chat-turn');
     expect(attributes[`${LangfuseOtelSpanAttributes.TRACE_METADATA}.memory`]).toBe('true');
-    expect(
-      attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.memory`],
-    ).toBeUndefined();
+    expect(attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.memory`]).toBeUndefined();
   });
 
   it('omits session and user attributes when not supplied', () => {
