@@ -123,7 +123,11 @@ export class MemoryService {
     let response: RecallResponse | undefined;
     const recallSpan = span.span({
       name: 'mnemonic.recall',
-      metadata: { 'mnemonic.tool': 'recall', 'mnemonic.scope': args.scope, 'mnemonic.limit': limit },
+      metadata: {
+        'mnemonic.tool': 'recall',
+        'mnemonic.scope': args.scope,
+        'mnemonic.limit': limit,
+      },
     });
     try {
       const result = await this.mnemonic.call<RecallResponse>('recall', args);

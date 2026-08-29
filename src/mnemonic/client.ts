@@ -193,10 +193,7 @@ export class MnemonicClient {
    * `cached: true` is what tells you the connection was reused rather than
    * leaving a hole in the waterfall.
    */
-  private async connectTraced(
-    parent: Span,
-    attributes: Record<string, unknown>,
-  ): Promise<Client> {
+  private async connectTraced(parent: Span, attributes: Record<string, unknown>): Promise<Client> {
     const span = parent.span({
       name: 'connect',
       metadata: { ...attributes, 'mnemonic.mode': this.config.mnemonic.mode },
