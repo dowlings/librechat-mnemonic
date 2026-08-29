@@ -31,9 +31,13 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\""
   },
   "dependencies": {
+    "@langfuse/core": "^5.10.1",
+    "@langfuse/otel": "^5.10.1",
+    "@langfuse/tracing": "^5.10.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.1",
     "express": "^5.2.1",
-    "langfuse": "^3.30.0",
     "mongodb": "^7.5.0",
     "pino": "^10.3.1",
     "zod": "^3.25.76"
