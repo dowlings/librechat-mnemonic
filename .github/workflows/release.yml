@@ -80,3 +80,13 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Trigger Renovate runner
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.RENOVATE_DISPATCH_TOKEN }}
+          repository: dowlings/renovate-bot
+          event-type: image-published
+          client-payload: >-
+            {"image": "ghcr.io/dowlings/librechat-mnemonic", "repo": "dowlings/nas-docker", "ref": "${{ github.ref }}", "sha": "${{ github.sha }}", "version": "${{ steps.meta.outputs.version }}"}
