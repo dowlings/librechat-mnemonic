@@ -3,11 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MemoryService } from '../src/memory/service.js';
 import type { AppConfig } from '../src/config.js';
 import type { MnemonicResult } from '../src/mnemonic/client.js';
-import type {
-  GetResponse,
-  RecallResponse,
-  RememberResponse,
-} from '../src/memory/types.js';
+import type { GetResponse, RecallResponse, RememberResponse } from '../src/memory/types.js';
 
 // ── Test fixtures ───────────────────────────────────────────────────────────
 
@@ -84,20 +80,22 @@ function makeContext(
   };
 }
 
-function createMockMnemonic(opts: {
-  recallResults?: Array<{
-    id: string;
-    title: string;
-    score: number;
-    boosted?: number;
-    tags?: string[];
-    vault?: string;
-    project?: { id: string; name: string };
-  }>;
-  rememberResult?: RememberResponse;
-  forgetShouldFail?: boolean;
-  getNotesOverride?: Map<string, { id: string; title: string; content: string; tags?: string[] }>;
-} = {}) {
+function createMockMnemonic(
+  opts: {
+    recallResults?: Array<{
+      id: string;
+      title: string;
+      score: number;
+      boosted?: number;
+      tags?: string[];
+      vault?: string;
+      project?: { id: string; name: string };
+    }>;
+    rememberResult?: RememberResponse;
+    forgetShouldFail?: boolean;
+    getNotesOverride?: Map<string, { id: string; title: string; content: string; tags?: string[] }>;
+  } = {},
+) {
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
 
   const mock = {
@@ -127,13 +125,15 @@ function createMockMnemonic(opts: {
         const ids = args.ids as string[];
         const notes = ids.map((id) => {
           const override = opts.getNotesOverride?.get(id);
-          return override ?? {
-            id,
-            title: `Note ${id}`,
-            content: `Content for ${id}`,
-            tags: [],
-            lifecycle: 'permanent',
-          };
+          return (
+            override ?? {
+              id,
+              title: `Note ${id}`,
+              content: `Content for ${id}`,
+              tags: [],
+              lifecycle: 'permanent',
+            }
+          );
         });
         return { structured: { action: 'get', notes } as GetResponse, text: '' };
       }
@@ -419,7 +419,11 @@ describe('MemoryService.getNotes — cache edge cases', () => {
 
     // Simulate external update: change what mnemonic would return
     noteContent = 'updated externally';
-    mnemonic.getNotesOverride?.set('note-1', { id: 'note-1', title: 'Note 1', content: noteContent });
+    mnemonic.getNotesOverride?.set('note-1', {
+      id: 'note-1',
+      title: 'Note 1',
+      content: noteContent,
+    });
 
     // Clear call log
     mnemonic.calls.length = 0;

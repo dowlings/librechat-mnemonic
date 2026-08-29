@@ -42,7 +42,11 @@ interface ToolResult {
   isError?: boolean;
 }
 
-function buildServer(deps: McpDeps, userId: string | null, conversationId: string | null): McpServer {
+function buildServer(
+  deps: McpDeps,
+  userId: string | null,
+  conversationId: string | null,
+): McpServer {
   const { config, store, memory, telemetry } = deps;
   const server = new McpServer(
     { name: 'librechat-mnemonic', version: '0.1.0' },
@@ -77,9 +81,7 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         const status = result.isError === true ? 'error' : 'ok';
         span.end({
           status,
-          ...(result.isError === true
-            ? { error: result.content[0]?.text ?? 'unknown error' }
-            : {}),
+          ...(result.isError === true ? { error: result.content[0]?.text ?? 'unknown error' } : {}),
         });
         return result;
       } catch (error) {
@@ -139,7 +141,9 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         title: z.string().describe('Specific, retrieval-friendly title. Maximum 200 characters.'),
         content: z
           .string()
-          .describe('Markdown body. Put the key fact in the first sentence. Maximum 8000 characters.'),
+          .describe(
+            'Markdown body. Put the key fact in the first sentence. Maximum 8000 characters.',
+          ),
         tags: z.array(z.string()).optional().describe('Optional tags. Maximum 6 tags.'),
         lifecycle: z.enum(['temporary', 'permanent']).optional(),
         role: z
@@ -165,7 +169,10 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         : result.reason === 'duplicate'
           ? `Not saved: equivalent memory already exists.\n  id: ${result.id}\n  title: "${result.duplicateTitle}"\nUse update_memory to correct it, or search_memory to read it.`
           : `Not saved: ${result.reason ?? 'unknown error'}.`;
-      return { content: [{ type: 'text' as const, text }], isError: !result.saved && result.reason === 'error' };
+      return {
+        content: [{ type: 'text' as const, text }],
+        isError: !result.saved && result.reason === 'error',
+      };
     }),
   );
 
@@ -190,7 +197,9 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       const ctx = await context();
       const ok = await memory.update(ctx, id, { title, content, tags });
       return {
-        content: [{ type: 'text' as const, text: ok ? `Updated ${id}.` : `Could not update ${id}.` }],
+        content: [
+          { type: 'text' as const, text: ok ? `Updated ${id}.` : `Could not update ${id}.` },
+        ],
         isError: !ok,
       };
     }),
@@ -207,7 +216,9 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       const ctx = await context();
       const ok = await memory.forget(ctx, id);
       return {
-        content: [{ type: 'text' as const, text: ok ? `Forgot ${id}.` : `Could not forget ${id}.` }],
+        content: [
+          { type: 'text' as const, text: ok ? `Forgot ${id}.` : `Could not forget ${id}.` },
+        ],
         isError: !ok,
       };
     }),
@@ -223,9 +234,17 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
         scope: z
           .enum(['project', 'global', 'all'])
           .optional()
-          .describe('Defaults to "all". Use "project" for only this project notes, "global" for unscoped.'),
+          .describe(
+            'Defaults to "all". Use "project" for only this project notes, "global" for unscoped.',
+          ),
         tags: z.array(z.string()).optional().describe('Filter to notes with any of these tags.'),
-        limit: z.number().int().min(1).max(100).optional().describe('Maximum notes to return. Defaults to 50.'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe('Maximum notes to return. Defaults to 50.'),
       },
     },
     withTelemetry('list_memory', async ({ scope, tags, limit }) => {
@@ -311,7 +330,10 @@ function buildServer(deps: McpDeps, userId: string | null, conversationId: strin
       await store.setConversationMemory(conversationId, userId, enabled);
       return {
         content: [
-          { type: 'text' as const, text: `Automatic memory is now ${enabled ? 'on' : 'off'} for this chat.` },
+          {
+            type: 'text' as const,
+            text: `Automatic memory is now ${enabled ? 'on' : 'off'} for this chat.`,
+          },
         ],
       };
     }),

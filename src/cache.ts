@@ -67,9 +67,8 @@ export class TtlCache<K, V> {
       hits: this.hitCount,
       misses: this.missCount,
       size: this.store.size,
-      hitRate: this.hitCount + this.missCount > 0
-        ? this.hitCount / (this.hitCount + this.missCount)
-        : 0,
+      hitRate:
+        this.hitCount + this.missCount > 0 ? this.hitCount / (this.hitCount + this.missCount) : 0,
     };
   }
 

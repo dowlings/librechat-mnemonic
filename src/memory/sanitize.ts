@@ -8,5 +8,8 @@
  * mnemonic prevents this.
  */
 export function sanitizeTitle(title: string): string {
-  return title.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
+  return title
+    .replace(/\r?\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

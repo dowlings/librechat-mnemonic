@@ -4,9 +4,7 @@ import { loadConfig } from '../src/config.js';
 
 const base = {
   LIBRECHAT_MONGO_URI: 'mongodb://mongo:27017/LibreChat',
-  UPSTREAMS: JSON.stringify([
-    { name: 'openai', baseUrl: 'https://api.openai.com', api: 'openai' },
-  ]),
+  UPSTREAMS: JSON.stringify([{ name: 'openai', baseUrl: 'https://api.openai.com', api: 'openai' }]),
 };
 
 describe('loadConfig', () => {
@@ -49,7 +47,12 @@ describe('loadConfig', () => {
 
   it('honours an upstream that opts out of forceIncludeUsage', () => {
     const UPSTREAMS = JSON.stringify([
-      { name: 'openai', baseUrl: 'https://api.openai.com', api: 'openai', forceIncludeUsage: false },
+      {
+        name: 'openai',
+        baseUrl: 'https://api.openai.com',
+        api: 'openai',
+        forceIncludeUsage: false,
+      },
     ]);
     const config = loadConfig({ ...base, UPSTREAMS } as NodeJS.ProcessEnv);
     expect(config.upstreams[0]?.forceIncludeUsage).toBe(false);

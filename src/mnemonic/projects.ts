@@ -48,13 +48,15 @@ export function projectDirName(name: string, fallbackId: string): string {
 }
 
 function clean(value: string): string {
-  return (value ?? '')
-    .replace(UNSAFE, ' ')
-    .replace(/\s+/g, ' ')
-    // Leading dots would hide the directory or, worse, name it "." or "..".
-    .replace(/^[.\s]+|[.\s]+$/g, '')
-    .slice(0, 80)
-    .trim();
+  return (
+    (value ?? '')
+      .replace(UNSAFE, ' ')
+      .replace(/\s+/g, ' ')
+      // Leading dots would hide the directory or, worse, name it "." or "..".
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+      .slice(0, 80)
+      .trim()
+  );
 }
 
 export interface ProjectDirOptions {

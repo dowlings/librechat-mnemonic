@@ -59,7 +59,10 @@ export class LibreChatStore {
   private static readonly BREAKER_COOLDOWN_MS = 15_000;
 
   /** conversationId -> project (or null for "checked, none"), short TTL. */
-  private readonly projectCache = new Map<string, { value: ConversationProject | null; at: number }>();
+  private readonly projectCache = new Map<
+    string,
+    { value: ConversationProject | null; at: number }
+  >();
   private readonly projectCacheTtlMs = 30_000;
 
   /** (userId, conversationId) -> MemorySetting, configurable TTL. */
@@ -192,7 +195,10 @@ export class LibreChatStore {
   }
 
   /** Resolve whether memory is on for this chat: conversation, then user, then config default. */
-  async getMemorySetting(userId: string | null, conversationId: string | null): Promise<MemorySetting> {
+  async getMemorySetting(
+    userId: string | null,
+    conversationId: string | null,
+  ): Promise<MemorySetting> {
     const cacheKey = this.settingsCacheKey(userId, conversationId);
     const cached = this.settingsCache.get(cacheKey);
     if (cached) return cached;
@@ -218,7 +224,10 @@ export class LibreChatStore {
     } catch (error) {
       logger.error({ err: error }, 'failed to read memory setting; falling back to default');
     }
-    const setting: MemorySetting = { enabled: this.config.memory.defaultEnabled, source: 'default' };
+    const setting: MemorySetting = {
+      enabled: this.config.memory.defaultEnabled,
+      source: 'default',
+    };
     this.settingsCache.set(cacheKey, setting);
     return setting;
   }
