@@ -80,3 +80,13 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Trigger nas-docker Renovate
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.NAS_DOCKER_DISPATCH_TOKEN }}
+          repository: dowlings/nas-docker
+          event-type: librechat-mnemonic-published
+          client-payload: >-
+            {"ref": "${{ github.ref }}", "sha": "${{ github.sha }}", "version": "${{ steps.meta.outputs.version }}"}
