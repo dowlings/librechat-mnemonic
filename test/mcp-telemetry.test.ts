@@ -27,12 +27,27 @@ const config = {
 interface RecordedSpan {
   options: SpanOptions;
   endArgs?: SpanEndOptions;
+  attributes: Record<string, unknown>;
+  exceptions: unknown[];
+  children: RecordedSpan[];
 }
 
 interface RecordedTrace {
   options: TraceOptions;
   endArgs?: TraceEndOptions;
   spans: RecordedSpan[];
+}
+
+function recordSpan(options: SpanOptions, siblings: RecordedSpan[]): Span {
+  const record: RecordedSpan = { options, attributes: {}, exceptions: [], children: [] };
+  siblings.push(record);
+  return {
+    span: (childOptions: SpanOptions) => recordSpan(childOptions, record.children),
+    setAttributes: (attributes: Record<string, unknown>) =>
+      void Object.assign(record.attributes, attributes),
+    recordException: (error: unknown) => void record.exceptions.push(error),
+    end: (endOptions?: SpanEndOptions) => void (record.endArgs = endOptions),
+  };
 }
 
 function createRecordingTelemetry() {
@@ -44,11 +59,7 @@ function createRecordingTelemetry() {
       const record: RecordedTrace = { options, spans: [] };
       traces.push(record);
       return {
-        span: (spanOptions: SpanOptions): Span => {
-          const spanRecord: RecordedSpan = { options: spanOptions };
-          record.spans.push(spanRecord);
-          return { end: (endOptions?: SpanEndOptions) => void (spanRecord.endArgs = endOptions) };
-        },
+        span: (spanOptions: SpanOptions): Span => recordSpan(spanOptions, record.spans),
         generation: () => ({ end: () => {} }),
         end: (endOptions?: TraceEndOptions) => void (record.endArgs = endOptions),
       };

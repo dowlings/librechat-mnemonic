@@ -1,7 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { LangfuseOtelSpanAttributes } from '@langfuse/core';
 import { LangfuseSpanProcessor } from '@langfuse/otel';
 import { type LangfuseSpan, setLangfuseTracerProvider, startObservation } from '@langfuse/tracing';
-import type { Attributes } from '@opentelemetry/api';
+import { type Attributes, SpanStatusCode } from '@opentelemetry/api';
 import { BasicTracerProvider, type SpanProcessor } from '@opentelemetry/sdk-trace-base';
 
 import { logger } from './logger.js';
@@ -32,6 +34,15 @@ export interface SpanEndOptions {
 }
 
 export interface Span {
+  /** Start a span nested under this one, for a sub-step of the same work. */
+  span(options: SpanOptions): Span;
+  /**
+   * Attach lightweight key/value data to the span. Repeated calls merge; the
+   * keys are namespaced by the caller (`mnemonic.tool`, `mnemonic.cache_hit`).
+   */
+  setAttributes(attributes: Record<string, unknown>): void;
+  /** Mark the span failed and record the error message on it. */
+  recordException(error: unknown): void;
   end(options?: SpanEndOptions): void;
 }
 
@@ -123,23 +134,51 @@ function toUsageDetails(usage?: UsageInfo): Record<string, number> | undefined {
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
+/**
+ * Wrap a Langfuse observation as a `Span`. Children are started from the
+ * observation itself, so nesting here is what produces the waterfall in the
+ * Langfuse UI (tool span → queue_wait / connect / mnemonic.*).
+ */
+function wrapSpan(span: LangfuseSpan, environment?: string): Span {
+  return {
+    span: (spanOptions: SpanOptions): Span =>
+      wrapSpan(
+        span.startObservation(spanOptions.name, {
+          metadata: spanOptions.metadata,
+          input: spanOptions.input,
+          environment,
+        }),
+        environment,
+      ),
+    setAttributes: (attributes: Record<string, unknown>) => {
+      span.update({ metadata: attributes });
+    },
+    recordException: (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      span.update({ level: 'ERROR', statusMessage: message });
+      if (error instanceof Error) span.otelSpan.recordException(error);
+      span.otelSpan.setStatus({ code: SpanStatusCode.ERROR, message });
+    },
+    end: (endOptions?: SpanEndOptions) => {
+      if (endOptions) {
+        span.update({ metadata: endOptions.metadata, output: endOptions.output });
+      }
+      span.end();
+    },
+  };
+}
+
 function wrapTrace(root: LangfuseSpan, environment?: string): Trace {
   return {
-    span: (spanOptions: SpanOptions): Span => {
-      const span = root.startObservation(spanOptions.name, {
-        metadata: spanOptions.metadata,
-        input: spanOptions.input,
+    span: (spanOptions: SpanOptions): Span =>
+      wrapSpan(
+        root.startObservation(spanOptions.name, {
+          metadata: spanOptions.metadata,
+          input: spanOptions.input,
+          environment,
+        }),
         environment,
-      });
-      return {
-        end: (endOptions?: SpanEndOptions) => {
-          if (endOptions) {
-            span.update({ metadata: endOptions.metadata, output: endOptions.output });
-          }
-          span.end();
-        },
-      };
-    },
+      ),
     generation: (genOptions: GenerationOptions): Generation => {
       const generation = root.startObservation(
         genOptions.name,
@@ -210,6 +249,38 @@ export class LangfuseTelemetry implements Telemetry {
   }
 }
 
+/** Null-object span, shared by NoopTelemetry and by `activeSpan()`. */
+const NOOP_SPAN: Span = {
+  span: () => NOOP_SPAN,
+  setAttributes: () => {},
+  recordException: () => {},
+  end: () => {},
+};
+
+const spanContext = new AsyncLocalStorage<Span>();
+
+/**
+ * Run `fn` with `span` as the ambient parent for anything it calls.
+ *
+ * The Langfuse tracer provider here is deliberately isolated with no global
+ * OTel context manager (see LangfuseTelemetry), so nesting cannot be inferred
+ * from OTel's own context. Carrying the parent in an AsyncLocalStorage is what
+ * lets code far from the request entry point — the mnemonic client's queue, the
+ * memory service's round-trips — hang child spans off the current tool span
+ * without every layer taking a span parameter.
+ */
+export function withActiveSpan<T>(span: Span, fn: () => T): T {
+  return spanContext.run(span, fn);
+}
+
+/**
+ * The ambient span, or a no-op span when nothing is being traced. Callers can
+ * always create children and set attributes without checking.
+ */
+export function activeSpan(): Span {
+  return spanContext.getStore() ?? NOOP_SPAN;
+}
+
 /**
  * Null-object telemetry. Used when no Langfuse credentials are configured so
  * the proxy never has to branch on "is telemetry on?".
@@ -218,10 +289,9 @@ class NoopTelemetry implements Telemetry {
   readonly enabled = false;
 
   trace(): Trace {
-    const noopSpan: Span = { end: () => {} };
     const noopGeneration: Generation = { end: () => {} };
     return {
-      span: () => noopSpan,
+      span: () => NOOP_SPAN,
       generation: () => noopGeneration,
       end: () => {},
     };
