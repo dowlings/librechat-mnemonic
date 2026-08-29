@@ -163,12 +163,14 @@ or add a webhook-based invalidation mechanism.
 
 ---
 
-## P4 — Won't (for now): `langfuse` imported unconditionally
+## P4 — Won't (for now): `@langfuse/*` imported unconditionally
 
 **File:** `src/telemetry.ts`
 
-The `import { Langfuse } from 'langfuse'` at the top of the file loads
-the SDK even when telemetry is disabled.
+The `@langfuse/tracing` / `@langfuse/otel` imports at the top of the file
+load the SDK even when telemetry is disabled. Nothing is *constructed* in
+that case — `NoopTelemetry` never touches OTel — but the modules are
+still parsed.
 
 **Status:** Langfuse will always be enabled in our deployment, so this
 is not a concern. If it becomes one, switch to a dynamic import:
@@ -176,8 +178,8 @@ is not a concern. If it becomes one, switch to a dynamic import:
 ```typescript
 export async function createTelemetry(config: TelemetryConfig): Promise<Telemetry> {
   if (config.enabled && config.publicKey && config.secretKey) {
-    const { Langfuse } = await import('langfuse');
-    return new LangfuseTelemetry(config.publicKey, config.secretKey, config.baseUrl, Langfuse);
+    const { LangfuseSpanProcessor } = await import('@langfuse/otel');
+    return new LangfuseTelemetry(new LangfuseSpanProcessor({ ...config }));
   }
   return new NoopTelemetry();
 }

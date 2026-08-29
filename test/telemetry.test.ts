@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { LangfuseOtelSpanAttributes } from '@langfuse/core';
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createTelemetry, type Telemetry } from '../src/telemetry.js';
+import { createTelemetry, LangfuseTelemetry, type Telemetry } from '../src/telemetry.js';
 
-// We test the noop path without importing Langfuse (which would require the
-// dep to be installed). The LangfuseTelemetry class is only constructed when
-// both keys are present, and we can't easily mock the Langfuse SDK in a unit
-// test, so we focus on the factory and noop behaviour.
+// The factory and noop paths need no Langfuse credentials. The real v5 path is
+// exercised through LangfuseTelemetry with an in-memory OTel exporter in place
+// of the LangfuseSpanProcessor, so nothing leaves the process.
 
 describe('createTelemetry', () => {
   it('returns noop telemetry when disabled', () => {
@@ -109,5 +111,158 @@ describe('NoopTelemetry', () => {
     }
     // If we got here without throwing, the test passes.
     expect(true).toBe(true);
+  });
+});
+
+describe('LangfuseTelemetry', () => {
+  let exporter: InMemorySpanExporter;
+  let telemetry: LangfuseTelemetry;
+
+  const byName = (name: string): ReadableSpan => {
+    const span = exporter.getFinishedSpans().find((candidate) => candidate.name === name);
+    if (!span) throw new Error(`no exported span named ${name}`);
+    return span;
+  };
+
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+    telemetry = new LangfuseTelemetry(new SimpleSpanProcessor(exporter));
+  });
+
+  afterEach(async () => {
+    await telemetry.shutdown();
+  });
+
+  it('is enabled', () => {
+    expect(telemetry.enabled).toBe(true);
+  });
+
+  it('gives the trace root span an end time', () => {
+    const trace = telemetry.trace({ name: 'chat-turn' });
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+
+    trace.end();
+
+    const root = byName('chat-turn');
+    expect(root.ended).toBe(true);
+    expect(root.endTime[0]).toBeGreaterThan(0);
+    expect(root.parentSpanContext).toBeUndefined();
+  });
+
+  it('writes session, user, and metadata as trace-level attributes', () => {
+    const trace = telemetry.trace({
+      name: 'chat-turn',
+      sessionId: 'conv-1',
+      userId: 'user-1',
+      metadata: { memory: true, upstream: 'openai', counts: { recalled: 3 } },
+    });
+    trace.end();
+
+    const { attributes } = byName('chat-turn');
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_NAME]).toBe('chat-turn');
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_SESSION_ID]).toBe('conv-1');
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_USER_ID]).toBe('user-1');
+    expect(attributes[`${LangfuseOtelSpanAttributes.TRACE_METADATA}.memory`]).toBe('true');
+    expect(attributes[`${LangfuseOtelSpanAttributes.TRACE_METADATA}.upstream`]).toBe('openai');
+    expect(attributes[`${LangfuseOtelSpanAttributes.TRACE_METADATA}.counts`]).toBe(
+      '{"recalled":3}',
+    );
+  });
+
+  it('does not duplicate trace metadata as observation metadata on the root span', () => {
+    const trace = telemetry.trace({
+      name: 'chat-turn',
+      metadata: { memory: true },
+    });
+    trace.end();
+
+    const { attributes } = byName('chat-turn');
+    expect(attributes[`${LangfuseOtelSpanAttributes.TRACE_METADATA}.memory`]).toBe('true');
+    expect(attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.memory`]).toBeUndefined();
+  });
+
+  it('omits session and user attributes when not supplied', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    trace.end();
+
+    const { attributes } = byName('mcp-tool');
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_SESSION_ID]).toBeUndefined();
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_USER_ID]).toBeUndefined();
+  });
+
+  it('parents child spans to the trace root and records end metadata', () => {
+    const trace = telemetry.trace({ name: 'chat-turn' });
+    const span = trace.span({ name: 'recall', metadata: { project: 'demo' } });
+    span.end({ hits: 2 });
+    trace.end();
+
+    const root = byName('chat-turn');
+    const recall = byName('recall');
+    expect(recall.parentSpanContext?.spanId).toBe(root.spanContext().spanId);
+    expect(recall.spanContext().traceId).toBe(root.spanContext().traceId);
+    expect(recall.ended).toBe(true);
+    expect(recall.attributes[LangfuseOtelSpanAttributes.OBSERVATION_TYPE]).toBe('span');
+    expect(recall.attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.project`]).toBe(
+      'demo',
+    );
+    expect(recall.attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.hits`]).toBe('2');
+  });
+
+  it('records generations with model and usage details', () => {
+    const trace = telemetry.trace({ name: 'chat-turn' });
+    const generation = trace.generation({ name: 'upstream', model: 'gpt-4o' });
+    generation.end({
+      usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 },
+      metadata: { stream: true },
+    });
+    trace.end();
+
+    const upstream = byName('upstream');
+    expect(upstream.attributes[LangfuseOtelSpanAttributes.OBSERVATION_TYPE]).toBe('generation');
+    expect(upstream.attributes[LangfuseOtelSpanAttributes.OBSERVATION_MODEL]).toBe('gpt-4o');
+    expect(upstream.attributes[LangfuseOtelSpanAttributes.OBSERVATION_USAGE_DETAILS]).toBe(
+      '{"input":11,"output":7,"total":18}',
+    );
+    expect(upstream.attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.stream`]).toBe(
+      'true',
+    );
+  });
+
+  it('omits usage details when the upstream reported none', () => {
+    const trace = telemetry.trace({ name: 'chat-turn' });
+    trace.generation({ name: 'upstream', model: 'gpt-4o' }).end();
+    trace.end();
+
+    expect(
+      byName('upstream').attributes[LangfuseOtelSpanAttributes.OBSERVATION_USAGE_DETAILS],
+    ).toBeUndefined();
+  });
+
+  it('still exports a child span that outlives the trace', () => {
+    const trace = telemetry.trace({ name: 'chat-turn' });
+    const write = trace.span({ name: 'memory-write' });
+    trace.end();
+    write.end({ written: 1 });
+
+    const root = byName('chat-turn');
+    const memoryWrite = byName('memory-write');
+    expect(memoryWrite.ended).toBe(true);
+    expect(memoryWrite.parentSpanContext?.spanId).toBe(root.spanContext().spanId);
+  });
+
+  it('gives each trace its own trace id', () => {
+    const first = telemetry.trace({ name: 'chat-turn' });
+    first.end();
+    const second = telemetry.trace({ name: 'mcp-tool' });
+    second.end();
+
+    expect(byName('chat-turn').spanContext().traceId).not.toBe(
+      byName('mcp-tool').spanContext().traceId,
+    );
+  });
+
+  it('flush resolves without error', async () => {
+    telemetry.trace({ name: 'chat-turn' }).end();
+    await expect(telemetry.flush()).resolves.toBeUndefined();
   });
 });

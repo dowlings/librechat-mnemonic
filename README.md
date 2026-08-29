@@ -213,7 +213,9 @@ Three independent caches keep latency low. All TTLs are configurable so you can 
 
 ### Telemetry
 
-When Langfuse credentials are set, the proxy creates its own Langfuse client and traces **every** chat-completions/messages turn that calls a model, whether or not memory is enabled and whether or not LibreChat sent a conversation id (side calls such as title generation are traced too). `/memory` commands are handled locally and never reach the model, so they produce no trace. Traces use `sessionId = conversationId` when one is present, so they correlate with LibreChat's own Langfuse traces. The `upstream` observation is a **generation** carrying the model name and token usage (prompt/completion/total), extracted from the upstream response for both OpenAI and Anthropic wire formats, streaming or not. `resolve-context`, `recall`, and `memory-write` spans are only added when memory is enabled for that turn.
+When Langfuse credentials are set, the proxy creates its own Langfuse tracer and traces **every** chat-completions/messages turn that calls a model, whether or not memory is enabled and whether or not LibreChat sent a conversation id (side calls such as title generation are traced too). `/memory` commands are handled locally and never reach the model, so they produce no trace. Traces use `sessionId = conversationId` when one is present, so they correlate with LibreChat's own Langfuse traces. The `upstream` observation is a **generation** carrying the model name and token usage (prompt/completion/total), extracted from the upstream response for both OpenAI and Anthropic wire formats, streaming or not. `resolve-context`, `recall`, and `memory-write` spans are only added when memory is enabled for that turn.
+
+Telemetry uses the Langfuse v5 SDK (`@langfuse/tracing` + `@langfuse/otel`), the same OpenTelemetry-based stack LibreChat uses. A trace is an OTel span, so `chat-turn` and `mcp-tool` traces carry real start **and** end times and render identically to LibreChat's. The OTel tracer provider is isolated to Langfuse's own tracer — it is never registered globally, so nothing else in the process is instrumented.
 
 Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Docker Compose env vars from 1Password or your secret manager) so traces from both services appear under the same session.
 
@@ -264,6 +266,8 @@ When enabled, each chat turn that calls a model produces a trace with three span
 | `recall` (span) | Semantic search + note body hydration (includes cache hit/miss in metadata) |
 | `upstream` (generation) | Model + token usage for the upstream call |
 | `memory-write` (span) | Extraction + dedupe + write (detached, ends after the response is sent) |
+
+The trace itself is the root `chat-turn` span, ended as soon as the response is sent. `memory-write` outlives it and is exported on its own end, so a detached write never holds the trace open.
 
 Filter by `sessionId` in Langfuse to see all turns for a conversation.
 
