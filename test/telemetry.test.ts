@@ -1,4 +1,5 @@
 import { LangfuseOtelSpanAttributes } from '@langfuse/core';
+import { SpanStatusCode } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -74,6 +75,15 @@ describe('NoopTelemetry', () => {
     // end should not throw
     expect(() => span.end()).not.toThrow();
     expect(() => span.end({ metadata: { foo: 'bar' }, output: { ok: true } })).not.toThrow();
+  });
+
+  it('span children, attributes, and exceptions are non-throwing', () => {
+    const span = telemetry.trace({ name: 'test' }).span({ name: 'test-span' });
+    const child = span.span({ name: 'queue_wait' });
+    expect(() => child.setAttributes({ 'mnemonic.tool': 'recall' })).not.toThrow();
+    expect(() => child.recordException(new Error('boom'))).not.toThrow();
+    expect(() => child.span({ name: 'deeper' }).end()).not.toThrow();
+    expect(() => child.end()).not.toThrow();
   });
 
   it('generation returns a non-throwing generation object', () => {
@@ -206,6 +216,66 @@ describe('LangfuseTelemetry', () => {
       'demo',
     );
     expect(recall.attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.hits`]).toBe('2');
+  });
+
+  it('parents a nested span to its parent span, not to the trace root', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    const tool = trace.span({ name: 'search_memory' });
+    const queue = tool.span({ name: 'queue_wait' });
+    queue.end();
+    tool.end();
+    trace.end();
+
+    const root = byName('mcp-tool');
+    const toolSpan = byName('search_memory');
+    const queueSpan = byName('queue_wait');
+    expect(toolSpan.parentSpanContext?.spanId).toBe(root.spanContext().spanId);
+    expect(queueSpan.parentSpanContext?.spanId).toBe(toolSpan.spanContext().spanId);
+    expect(queueSpan.spanContext().traceId).toBe(root.spanContext().traceId);
+  });
+
+  it('writes span attributes as observation metadata', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    const span = trace.span({ name: 'search_memory' });
+    span.setAttributes({ 'mnemonic.cache_hit': false });
+    span.setAttributes({ 'mnemonic.result_count': 3 });
+    span.end();
+    trace.end();
+
+    const { attributes } = byName('search_memory');
+    const metadata = LangfuseOtelSpanAttributes.OBSERVATION_METADATA;
+    expect(attributes[`${metadata}.mnemonic.cache_hit`]).toBe('false');
+    expect(attributes[`${metadata}.mnemonic.result_count`]).toBe('3');
+  });
+
+  it('records an exception as an ERROR status, level, and span event', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    const span = trace.span({ name: 'mnemonic.recall' });
+    span.recordException(new Error('mnemonic exploded'));
+    span.end({ metadata: { status: 'error' } });
+    trace.end();
+
+    const recall = byName('mnemonic.recall');
+    expect(recall.status.code).toBe(SpanStatusCode.ERROR);
+    expect(recall.status.message).toBe('mnemonic exploded');
+    expect(recall.attributes[LangfuseOtelSpanAttributes.OBSERVATION_LEVEL]).toBe('ERROR');
+    expect(recall.attributes[LangfuseOtelSpanAttributes.OBSERVATION_STATUS_MESSAGE]).toBe(
+      'mnemonic exploded',
+    );
+    expect(recall.events.map((event) => event.name)).toContain('exception');
+  });
+
+  it('records a non-Error exception without an exception event', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    const span = trace.span({ name: 'mnemonic.recall' });
+    span.recordException('plain string failure');
+    span.end();
+    trace.end();
+
+    const recall = byName('mnemonic.recall');
+    expect(recall.status.code).toBe(SpanStatusCode.ERROR);
+    expect(recall.status.message).toBe('plain string failure');
+    expect(recall.events).toHaveLength(0);
   });
 
   it('records span input and output as observation attributes', () => {

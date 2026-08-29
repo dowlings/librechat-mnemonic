@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MnemonicClient } from '../src/mnemonic/client.js';
 import type { AppConfig } from '../src/config.js';
+import { withActiveSpan, type Span, type SpanOptions } from '../src/telemetry.js';
 
 const baseConfig: AppConfig = {
   port: 8710,
@@ -92,6 +93,70 @@ function createMockMnemonicClient(delays: { read?: number; write?: number } = {}
 
   return { client, fakeClient };
 }
+
+interface TimedSpan {
+  name: string;
+  tool: unknown;
+  startedAt: number;
+  durationMs?: number;
+}
+
+/** A parent span that timestamps the children the client opens under it. */
+function createTimingSpan(recorded: TimedSpan[]): Span {
+  const parent: Span = {
+    span: (options: SpanOptions) => {
+      const record: TimedSpan = {
+        name: options.name,
+        tool: options.metadata?.['mnemonic.tool'],
+        startedAt: Date.now(),
+      };
+      recorded.push(record);
+      return {
+        ...parent,
+        end: () => void (record.durationMs = Date.now() - record.startedAt),
+      };
+    },
+    setAttributes: () => {},
+    recordException: () => {},
+    end: () => {},
+  };
+  return parent;
+}
+
+describe('MnemonicClient — queue telemetry', () => {
+  it('queue_wait measures the time spent behind another call on the same queue', async () => {
+    const { client } = createMockMnemonicClient({ read: 60 });
+    const spans: TimedSpan[] = [];
+
+    await withActiveSpan(createTimingSpan(spans), async () =>
+      Promise.all([client.call('recall', { query: 'a' }), client.call('recall', { query: 'b' })]),
+    );
+
+    const waits = spans.filter((span) => span.name === 'queue_wait');
+    expect(waits).toHaveLength(2);
+    expect(waits.every((wait) => wait.tool === 'recall')).toBe(true);
+    // The first call runs immediately; the second waits out the first's 60ms.
+    expect(waits[0]!.durationMs).toBeLessThan(40);
+    expect(waits[1]!.durationMs).toBeGreaterThanOrEqual(50);
+
+    await client.close();
+  });
+
+  it('opens a connect span for every call', async () => {
+    const { client } = createMockMnemonicClient({ read: 1 });
+    const spans: TimedSpan[] = [];
+
+    await withActiveSpan(createTimingSpan(spans), async () =>
+      client.call('recall', { query: 'a' }),
+    );
+
+    const connects = spans.filter((span) => span.name === 'connect');
+    expect(connects).toHaveLength(1);
+    expect(connects[0]!.durationMs).toBeDefined();
+
+    await client.close();
+  });
+});
 
 describe('MnemonicClient — queue split', () => {
   it('read does not wait behind a slow write', async () => {

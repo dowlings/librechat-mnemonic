@@ -6,6 +6,7 @@ import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MnemonicClient } from '../mnemonic/client.js';
 import { resolveProjectDir } from '../mnemonic/projects.js';
+import { activeSpan } from '../telemetry.js';
 import { sanitizeTitle } from './sanitize.js';
 import type {
   GetResponse,
@@ -94,13 +95,20 @@ export class MemoryService {
     const scope = overrides.scope ?? this.config.mnemonic.recallScope;
     const limit = overrides.limit ?? this.config.mnemonic.recallLimit;
 
+    const span = activeSpan();
+
     // Check recall cache — retries and edits produce the same query.
     const cacheKey = `${context.conversationId ?? 'none'}:${scope}:${limit}:${hashString(query)}`;
     const cached = this.recallCache.get(cacheKey);
     if (cached) {
       logger.debug({ cacheKey, count: cached.length }, 'recall cache hit');
+      span.setAttributes({
+        'mnemonic.cache_hit': true,
+        'mnemonic.result_count': cached.length,
+      });
       return cached;
     }
+    span.setAttributes({ 'mnemonic.cache_hit': false });
 
     const args: Record<string, unknown> = {
       query,
@@ -113,15 +121,29 @@ export class MemoryService {
     if (!context.cwd && scope === 'project') args.scope = 'global';
 
     let response: RecallResponse | undefined;
+    const recallSpan = span.span({
+      name: 'mnemonic.recall',
+      metadata: {
+        'mnemonic.tool': 'recall',
+        'mnemonic.scope': args.scope,
+        'mnemonic.limit': limit,
+      },
+    });
     try {
       const result = await this.mnemonic.call<RecallResponse>('recall', args);
       response = result.structured;
+      recallSpan.end({
+        metadata: { 'mnemonic.result_count': response?.results?.length ?? 0 },
+      });
     } catch (error) {
       logger.error({ err: error, query: truncate(query, 120) }, 'recall failed');
+      recallSpan.recordException(error);
+      recallSpan.end({ metadata: { status: 'error' } });
       return [];
     }
 
     const results = response?.results ?? [];
+    span.setAttributes({ 'mnemonic.result_count': results.length });
     if (results.length === 0) return [];
 
     const ids = results.map((r) => r.id);
@@ -157,6 +179,10 @@ export class MemoryService {
     // Fetch only the missing ones.
     const args: Record<string, unknown> = { ids: missing };
     if (context.cwd) args.cwd = context.cwd;
+    const span = activeSpan().span({
+      name: 'mnemonic.get',
+      metadata: { 'mnemonic.tool': 'get', 'mnemonic.requested': missing.length },
+    });
     try {
       const result = await this.mnemonic.call<GetResponse>('get', args);
       const fetched = result.structured?.notes ?? [];
@@ -167,9 +193,12 @@ export class MemoryService {
         { requested: ids.length, cached: cached.length, fetched: fetched.length },
         'note body cache partial',
       );
+      span.end({ metadata: { 'mnemonic.result_count': fetched.length } });
       return [...cached, ...fetched];
     } catch (error) {
       logger.error({ err: error }, 'get failed');
+      span.recordException(error);
+      span.end({ metadata: { status: 'error' } });
       return cached;
     }
   }
@@ -236,6 +265,10 @@ export class MemoryService {
     if (candidate.role) args.role = candidate.role;
     if (context.cwd) args.cwd = context.cwd;
 
+    const span = activeSpan().span({
+      name: 'mnemonic.remember',
+      metadata: { 'mnemonic.tool': 'remember', 'mnemonic.scope': args.scope },
+    });
     try {
       const result = await this.mnemonic.call<RememberResponse>('remember', args);
       const structured = result.structured;
@@ -244,6 +277,7 @@ export class MemoryService {
           { issues: structured.issues, title: candidate.title },
           'memory rejected by lint',
         );
+        span.end({ metadata: { status: 'lint_error', issues: structured.issues } });
         return { saved: false, reason: 'lint_error' };
       }
       logger.info(
@@ -251,9 +285,12 @@ export class MemoryService {
         'memory saved',
       );
       this.invalidateRecallCache();
+      span.end({ metadata: { 'mnemonic.note_id': structured?.id } });
       return { saved: true, id: structured?.id };
     } catch (error) {
       logger.error({ err: error, title: candidate.title }, 'remember failed');
+      span.recordException(error);
+      span.end({ metadata: { status: 'error' } });
       return { saved: false, reason: 'error' };
     }
   }
@@ -271,13 +308,26 @@ export class MemoryService {
     };
     if (context.cwd) args.cwd = context.cwd;
 
+    const span = activeSpan().span({
+      name: 'mnemonic.dedupe',
+      metadata: { 'mnemonic.tool': 'recall', 'mnemonic.scope': args.scope },
+    });
     try {
       const result = await this.mnemonic.call<RecallResponse>('recall', args);
       const results = result.structured?.results ?? [];
       const threshold = this.config.memory.dedupeThreshold;
-      return results.filter((item) => (item.boosted ?? item.score ?? 0) >= threshold);
+      const duplicates = results.filter((item) => (item.boosted ?? item.score ?? 0) >= threshold);
+      span.end({
+        metadata: {
+          'mnemonic.result_count': results.length,
+          'mnemonic.duplicate_count': duplicates.length,
+        },
+      });
+      return duplicates;
     } catch (error) {
       logger.warn({ err: error }, 'dedupe check failed; saving anyway');
+      span.recordException(error);
+      span.end({ metadata: { status: 'error' } });
       return [];
     }
   }

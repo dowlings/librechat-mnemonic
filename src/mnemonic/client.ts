@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import type { AppConfig } from '../config.js';
 import { logger } from '../logger.js';
+import { activeSpan, type Span } from '../telemetry.js';
 
 /**
  * A thin MCP client for mnemonic.
@@ -144,19 +145,69 @@ export class MnemonicClient {
    */
   async call<T = unknown>(tool: string, args: Record<string, unknown>): Promise<MnemonicResult<T>> {
     const isWrite = MnemonicClient.WRITE_TOOLS.has(tool);
-    return this.serialise(async () => {
-      const client = await this.connect();
-      const result = await client.callTool({ name: tool, arguments: args }, undefined, {
-        timeout: this.config.mnemonic.timeoutMs,
-      });
+    const parent = activeSpan();
+    const attributes = {
+      'mnemonic.tool': tool,
+      'mnemonic.timeout_ms': this.config.mnemonic.timeoutMs,
+    };
 
-      const text = extractText(result as { content?: unknown });
-      if (result.isError) {
-        throw new MnemonicToolError(tool, text || 'unknown mnemonic error');
+    // Opened before joining the queue and closed when the work actually starts,
+    // so its duration *is* the time spent waiting behind other calls — the
+    // number that distinguishes a slow mnemonic from a contended one.
+    const queueSpan = parent.span({
+      name: 'queue_wait',
+      metadata: { ...attributes, 'mnemonic.queue': isWrite ? 'write' : 'read' },
+    });
+    let queueSpanOpen = true;
+    const endQueueSpan = () => {
+      if (queueSpanOpen) {
+        queueSpanOpen = false;
+        queueSpan.end();
       }
+    };
 
-      return { structured: result.structuredContent as T | undefined, text };
-    }, isWrite);
+    try {
+      return await this.serialise(async () => {
+        endQueueSpan();
+        const client = await this.connectTraced(parent, attributes);
+        const result = await client.callTool({ name: tool, arguments: args }, undefined, {
+          timeout: this.config.mnemonic.timeoutMs,
+        });
+
+        const text = extractText(result as { content?: unknown });
+        if (result.isError) {
+          throw new MnemonicToolError(tool, text || 'unknown mnemonic error');
+        }
+
+        return { structured: result.structuredContent as T | undefined, text };
+      }, isWrite);
+    } finally {
+      // The queue span is normally closed when the work starts; this covers the
+      // case where the call never got that far.
+      endQueueSpan();
+    }
+  }
+
+  /**
+   * `connect()` with a span around it. Always emitted — a near-zero span with
+   * `cached: true` is what tells you the connection was reused rather than
+   * leaving a hole in the waterfall.
+   */
+  private async connectTraced(parent: Span, attributes: Record<string, unknown>): Promise<Client> {
+    const span = parent.span({
+      name: 'connect',
+      metadata: { ...attributes, 'mnemonic.mode': this.config.mnemonic.mode },
+    });
+    const cached = this.client !== null;
+    try {
+      const client = await this.connect();
+      span.end({ metadata: { 'mnemonic.connection_cached': cached } });
+      return client;
+    } catch (error) {
+      span.recordException(error);
+      span.end({ metadata: { 'mnemonic.connection_cached': cached, status: 'error' } });
+      throw error;
+    }
   }
 
   async close(): Promise<void> {

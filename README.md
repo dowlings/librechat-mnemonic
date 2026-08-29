@@ -217,7 +217,7 @@ When Langfuse credentials are set, the proxy creates its own Langfuse tracer and
 
 Telemetry uses the Langfuse v5 SDK (`@langfuse/tracing` + `@langfuse/otel`), the same OpenTelemetry-based stack LibreChat uses. A trace is an OTel span, so `chat-turn` and `mcp-tool` traces carry real start **and** end times and render identically to LibreChat's. The OTel tracer provider is isolated to Langfuse's own tracer — it is never registered globally, so nothing else in the process is instrumented.
 
-MCP tool calls are traced as `mcp-tool`, with the tool arguments recorded as the trace and span **input** and the tool's reply text as the **output**, so a trace shows what was searched for and what came back rather than just the tool name.
+MCP tool calls are traced as `mcp-tool`, with the tool arguments recorded as the trace and span **input** and the tool's reply text as the **output**, so a trace shows what was searched for and what came back rather than just the tool name. Each tool span is broken down into child spans (see [Langfuse](#langfuse) below) so a slow call shows *where* the time went.
 
 Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Docker Compose env vars from 1Password or your secret manager) so traces from both services appear under the same session.
 
@@ -271,6 +271,27 @@ When enabled, each chat turn that calls a model produces a trace with three span
 | `memory-write` (span) | Extraction + dedupe + write (detached, ends after the response is sent) |
 
 The trace itself is the root `chat-turn` span, ended as soon as the response is sent. `memory-write` outlives it and is exported on its own end, so a detached write never holds the trace open.
+
+MCP tool calls produce an `mcp-tool` trace whose tool span is broken down into child spans, so a slow call is attributable rather than just slow:
+
+```
+mcp-tool                      mcp-tool
+└─ search_memory              └─ save_memory
+   ├─ queue_wait                 ├─ queue_wait
+   ├─ connect                    ├─ connect
+   ├─ mnemonic.recall            ├─ mnemonic.dedupe
+   └─ mnemonic.get               └─ mnemonic.remember
+```
+
+| Observation | What it measures |
+| --- | --- |
+| `queue_wait` (span) | Time spent waiting behind other calls on the mnemonic read or write queue. One per round-trip. |
+| `connect` (span) | MCP connection setup. Near-zero with `mnemonic.connection_cached: true` when the existing connection is reused. |
+| `mnemonic.recall` / `mnemonic.dedupe` (span) | Full round-trip to mnemonic for a search, including embedding and vector search on its side. |
+| `mnemonic.get` (span) | Note body fetch for the ids a recall returned. |
+| `mnemonic.remember` (span) | Full round-trip for a write, including embedding and storage. |
+
+Spans carry `mnemonic.tool`, `mnemonic.timeout_ms`, `mnemonic.cache_hit`, and `mnemonic.result_count` as metadata — `mnemonic.tool` is what tells the two `queue_wait` spans apart. When a mnemonic call fails, the proxy still degrades gracefully (empty recall, `saved: false`), but the span carries the exception with `level: ERROR` so the failure is visible in Langfuse and not only in the server logs.
 
 Filter by `sessionId` in Langfuse to see all turns for a conversation.
 

@@ -6,7 +6,7 @@ import type { AppConfig } from '../config.js';
 import type { LibreChatStore } from '../librechat/mongo.js';
 import { logger } from '../logger.js';
 import type { MemoryService } from '../memory/service.js';
-import type { Telemetry } from '../telemetry.js';
+import { withActiveSpan, type Telemetry } from '../telemetry.js';
 
 /**
  * The explicit half of the integration.
@@ -58,10 +58,14 @@ export function buildServer(
   /**
    * Wrap a tool handler with Langfuse tracing. Creates a trace per MCP tool
    * call, named "mcp-tool" with the tool name and user/conversation context
-   * as metadata. A single span covers the tool's execution. Both the trace and
+   * as metadata. A span covers the tool's execution. Both the trace and
    * the span carry the tool arguments as input and the tool result as output,
    * so a Langfuse trace shows what was asked and what came back rather than
    * just the tool name.
+   *
+   * The handler runs with that span installed as the ambient parent, so the
+   * memory service and mnemonic client can add child spans (queue_wait,
+   * connect, mnemonic.*) and turn each tool call into a latency waterfall.
    *
    * Most handlers report failure by returning `{ isError: true }` rather than
    * throwing — the wrapper inspects the result to record the correct span
@@ -83,8 +87,11 @@ export function buildServer(
       const span = trace.span({ name: toolName, input: args });
       let output: unknown;
       try {
-        const result = await handler(args);
+        const result = await withActiveSpan(span, () => handler(args));
         output = toolOutput(result);
+        if (result.isError === true) {
+          span.recordException(new Error(result.content[0]?.text ?? 'unknown error'));
+        }
         span.end({
           metadata: {
             status: result.isError === true ? 'error' : 'ok',
@@ -97,6 +104,7 @@ export function buildServer(
         return result;
       } catch (error) {
         output = { error: error instanceof Error ? error.message : String(error) };
+        span.recordException(error);
         span.end({
           metadata: {
             status: 'error',

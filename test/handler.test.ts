@@ -10,6 +10,7 @@ import type {
   Generation,
   GenerationEndOptions,
   GenerationOptions,
+  Span,
   Telemetry,
   TraceOptions,
 } from '../src/telemetry.js';
@@ -77,6 +78,13 @@ interface RecordedGeneration {
   endArgs?: GenerationEndOptions;
 }
 
+const noopSpan: Span = {
+  span: () => noopSpan,
+  setAttributes: () => {},
+  recordException: () => {},
+  end: () => {},
+};
+
 function createRecordingTelemetry() {
   const traces: TraceOptions[] = [];
   const generations: RecordedGeneration[] = [];
@@ -86,7 +94,7 @@ function createRecordingTelemetry() {
     trace(options) {
       traces.push(options);
       return {
-        span: () => ({ end: () => {} }),
+        span: () => noopSpan,
         generation: (genOptions: GenerationOptions): Generation => {
           const record: RecordedGeneration = { options: genOptions };
           generations.push(record);
