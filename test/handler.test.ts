@@ -67,7 +67,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       settingsTtlMs: 30_000,
       maxEntries: 5_000,
     },
-    telemetry: { enabled: false, baseUrl: 'https://cloud.langfuse.com' },
+    telemetry: { enabled: false, baseUrl: 'https://cloud.langfuse.com', environment: 'test' },
     ...overrides,
   };
 }

@@ -188,4 +188,24 @@ describe('loadConfig', () => {
     } as NodeJS.ProcessEnv);
     expect(config.telemetry.baseUrl).toBe('https://langfuse.self-hosted.example');
   });
+
+  it('defaults the Langfuse environment to production so it matches LibreChat', () => {
+    expect(loadConfig(base as NodeJS.ProcessEnv).telemetry.environment).toBe('production');
+  });
+
+  it('honours a custom Langfuse environment', () => {
+    const config = loadConfig({
+      ...base,
+      LANGFUSE_ENVIRONMENT: 'staging',
+    } as NodeJS.ProcessEnv);
+    expect(config.telemetry.environment).toBe('staging');
+  });
+
+  it('falls back to production when the Langfuse environment is blank', () => {
+    const config = loadConfig({
+      ...base,
+      LANGFUSE_ENVIRONMENT: '  ',
+    } as NodeJS.ProcessEnv);
+    expect(config.telemetry.environment).toBe('production');
+  });
 });

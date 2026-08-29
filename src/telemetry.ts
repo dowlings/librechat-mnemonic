@@ -11,15 +11,28 @@ export interface TraceOptions {
   sessionId?: string;
   userId?: string;
   metadata?: Record<string, unknown>;
+  /** Trace-level input — for an MCP tool call, the tool arguments. */
+  input?: unknown;
+}
+
+export interface TraceEndOptions {
+  /** Trace-level output — for an MCP tool call, the tool result. */
+  output?: unknown;
 }
 
 export interface SpanOptions {
   name: string;
   metadata?: Record<string, unknown>;
+  input?: unknown;
+}
+
+export interface SpanEndOptions {
+  metadata?: Record<string, unknown>;
+  output?: unknown;
 }
 
 export interface Span {
-  end(metadata?: Record<string, unknown>): void;
+  end(options?: SpanEndOptions): void;
 }
 
 /**
@@ -51,7 +64,7 @@ export interface Generation {
 export interface Trace {
   span(options: SpanOptions): Span;
   generation(options: GenerationOptions): Generation;
-  end(): void;
+  end(options?: TraceEndOptions): void;
 }
 
 export interface Telemetry {
@@ -87,6 +100,10 @@ function traceAttributes(options: TraceOptions): Attributes {
   if (options.userId) {
     attributes[LangfuseOtelSpanAttributes.TRACE_USER_ID] = options.userId;
   }
+  const input = serializeAttribute(options.input);
+  if (input !== undefined) {
+    attributes[LangfuseOtelSpanAttributes.TRACE_INPUT] = input;
+  }
   for (const [key, value] of Object.entries(options.metadata ?? {})) {
     const serialized = serializeAttribute(value);
     if (serialized !== undefined) {
@@ -106,13 +123,19 @@ function toUsageDetails(usage?: UsageInfo): Record<string, number> | undefined {
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
-function wrapTrace(root: LangfuseSpan): Trace {
+function wrapTrace(root: LangfuseSpan, environment?: string): Trace {
   return {
     span: (spanOptions: SpanOptions): Span => {
-      const span = root.startObservation(spanOptions.name, { metadata: spanOptions.metadata });
+      const span = root.startObservation(spanOptions.name, {
+        metadata: spanOptions.metadata,
+        input: spanOptions.input,
+        environment,
+      });
       return {
-        end: (metadata?: Record<string, unknown>) => {
-          if (metadata) span.update({ metadata });
+        end: (endOptions?: SpanEndOptions) => {
+          if (endOptions) {
+            span.update({ metadata: endOptions.metadata, output: endOptions.output });
+          }
           span.end();
         },
       };
@@ -120,7 +143,7 @@ function wrapTrace(root: LangfuseSpan): Trace {
     generation: (genOptions: GenerationOptions): Generation => {
       const generation = root.startObservation(
         genOptions.name,
-        { model: genOptions.model, metadata: genOptions.metadata },
+        { model: genOptions.model, metadata: genOptions.metadata, environment },
         { asType: 'generation' },
       );
       return {
@@ -136,7 +159,13 @@ function wrapTrace(root: LangfuseSpan): Trace {
     // A v5 trace *is* its root span, so ending it stamps the trace end time.
     // Children that outlive it (the detached memory write) still export on
     // their own end — OTel exports each span independently.
-    end: () => root.end(),
+    end: (endOptions?: TraceEndOptions) => {
+      const output = serializeAttribute(endOptions?.output);
+      if (output !== undefined) {
+        root.otelSpan.setAttribute(LangfuseOtelSpanAttributes.TRACE_OUTPUT, output);
+      }
+      root.end();
+    },
   };
 }
 
@@ -150,8 +179,10 @@ function wrapTrace(root: LangfuseSpan): Trace {
 export class LangfuseTelemetry implements Telemetry {
   readonly enabled = true;
   private readonly provider: BasicTracerProvider;
+  private readonly environment?: string;
 
-  constructor(processor: SpanProcessor) {
+  constructor(processor: SpanProcessor, environment?: string) {
+    this.environment = environment;
     this.provider = new BasicTracerProvider({ spanProcessors: [processor] });
     // Isolated rather than global: this provider only ever serves Langfuse's
     // own tracer, so we never take over OTel for the rest of the process. It
@@ -163,10 +194,11 @@ export class LangfuseTelemetry implements Telemetry {
   trace(options: TraceOptions): Trace {
     // Metadata is written once, canonically, via traceAttributes below as
     // TRACE_METADATA.* — passing it to startObservation too would also stamp
-    // it as OBSERVATION_METADATA.* on the same root span.
-    const root = startObservation(options.name);
+    // it as OBSERVATION_METADATA.* on the same root span. The environment is
+    // not a trace-level attribute, so it has to go on every observation.
+    const root = startObservation(options.name, { environment: this.environment });
     root.otelSpan.setAttributes(traceAttributes(options));
-    return wrapTrace(root);
+    return wrapTrace(root, this.environment);
   }
 
   async flush(): Promise<void> {
@@ -204,15 +236,24 @@ export function createTelemetry(config: {
   publicKey?: string;
   secretKey?: string;
   baseUrl: string;
+  environment?: string;
 }): Telemetry {
   if (config.enabled && config.publicKey && config.secretKey) {
-    logger.info({ baseUrl: config.baseUrl }, 'langfuse telemetry enabled');
+    logger.info(
+      { baseUrl: config.baseUrl, environment: config.environment },
+      'langfuse telemetry enabled',
+    );
     return new LangfuseTelemetry(
+      // The processor stamps the environment on every span it sees; passing it
+      // to LangfuseTelemetry too keeps the value on spans regardless of which
+      // processor is wired in.
       new LangfuseSpanProcessor({
         publicKey: config.publicKey,
         secretKey: config.secretKey,
         baseUrl: config.baseUrl,
+        environment: config.environment,
       }),
+      config.environment,
     );
   }
   return new NoopTelemetry();

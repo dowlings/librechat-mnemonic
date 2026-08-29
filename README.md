@@ -217,6 +217,8 @@ When Langfuse credentials are set, the proxy creates its own Langfuse tracer and
 
 Telemetry uses the Langfuse v5 SDK (`@langfuse/tracing` + `@langfuse/otel`), the same OpenTelemetry-based stack LibreChat uses. A trace is an OTel span, so `chat-turn` and `mcp-tool` traces carry real start **and** end times and render identically to LibreChat's. The OTel tracer provider is isolated to Langfuse's own tracer — it is never registered globally, so nothing else in the process is instrumented.
 
+MCP tool calls are traced as `mcp-tool`, with the tool arguments recorded as the trace and span **input** and the tool's reply text as the **output**, so a trace shows what was searched for and what came back rather than just the tool name.
+
 Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Docker Compose env vars from 1Password or your secret manager) so traces from both services appear under the same session.
 
 | Variable | Default | Description |
@@ -224,6 +226,7 @@ Share the same `LANGFUSE_*` credentials with LibreChat's own config (e.g. via Do
 | `LANGFUSE_PUBLIC_KEY` | none | Langfuse public key. When set with the secret key, telemetry is enabled. |
 | `LANGFUSE_SECRET_KEY` | none | Langfuse secret key. |
 | `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse API URL. Point at your self-hosted instance if needed. |
+| `LANGFUSE_ENVIRONMENT` | `production` | Langfuse environment these traces are filed under. Defaults to `production` to match LibreChat's own agent traces; without it Langfuse files them under `default` and the two services cannot be filtered together. |
 
 When either key is missing, telemetry is a no-op with zero overhead.
 

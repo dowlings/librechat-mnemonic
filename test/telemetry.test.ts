@@ -73,7 +73,7 @@ describe('NoopTelemetry', () => {
     expect(typeof span.end).toBe('function');
     // end should not throw
     expect(() => span.end()).not.toThrow();
-    expect(() => span.end({ foo: 'bar' })).not.toThrow();
+    expect(() => span.end({ metadata: { foo: 'bar' }, output: { ok: true } })).not.toThrow();
   });
 
   it('generation returns a non-throwing generation object', () => {
@@ -103,11 +103,11 @@ describe('NoopTelemetry', () => {
   it('creating many traces, spans, and generations does not throw or accumulate state', () => {
     for (let i = 0; i < 100; i++) {
       const trace = telemetry.trace({ name: `trace-${i}` });
-      const span = trace.span({ name: `span-${i}` });
-      span.end({ index: i });
+      const span = trace.span({ name: `span-${i}`, input: { index: i } });
+      span.end({ metadata: { index: i }, output: `done-${i}` });
       const generation = trace.generation({ name: `gen-${i}`, model: 'gpt-4o' });
       generation.end({ usage: { promptTokens: i, completionTokens: i, totalTokens: i * 2 } });
-      trace.end();
+      trace.end({ output: `trace-${i}` });
     }
     // If we got here without throwing, the test passes.
     expect(true).toBe(true);
@@ -193,7 +193,7 @@ describe('LangfuseTelemetry', () => {
   it('parents child spans to the trace root and records end metadata', () => {
     const trace = telemetry.trace({ name: 'chat-turn' });
     const span = trace.span({ name: 'recall', metadata: { project: 'demo' } });
-    span.end({ hits: 2 });
+    span.end({ metadata: { hits: 2 } });
     trace.end();
 
     const root = byName('chat-turn');
@@ -206,6 +206,74 @@ describe('LangfuseTelemetry', () => {
       'demo',
     );
     expect(recall.attributes[`${LangfuseOtelSpanAttributes.OBSERVATION_METADATA}.hits`]).toBe('2');
+  });
+
+  it('records span input and output as observation attributes', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    const span = trace.span({ name: 'search_memory', input: { query: 'roadmap', limit: 3 } });
+    span.end({ metadata: { status: 'ok' }, output: '## Roadmap\nships in Q3' });
+    trace.end();
+
+    const { attributes } = byName('search_memory');
+    expect(attributes[LangfuseOtelSpanAttributes.OBSERVATION_INPUT]).toBe(
+      '{"query":"roadmap","limit":3}',
+    );
+    expect(attributes[LangfuseOtelSpanAttributes.OBSERVATION_OUTPUT]).toBe(
+      '## Roadmap\nships in Q3',
+    );
+  });
+
+  it('records trace input and output as trace attributes', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool', input: { query: 'roadmap' } });
+    trace.end({ output: 'No matching memories.' });
+
+    const { attributes } = byName('mcp-tool');
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_INPUT]).toBe('{"query":"roadmap"}');
+    expect(attributes[LangfuseOtelSpanAttributes.TRACE_OUTPUT]).toBe('No matching memories.');
+  });
+
+  it('omits input and output attributes when not supplied', () => {
+    const trace = telemetry.trace({ name: 'chat-turn' });
+    const span = trace.span({ name: 'recall' });
+    span.end();
+    trace.end();
+
+    const root = byName('chat-turn');
+    const recall = byName('recall');
+    expect(root.attributes[LangfuseOtelSpanAttributes.TRACE_INPUT]).toBeUndefined();
+    expect(root.attributes[LangfuseOtelSpanAttributes.TRACE_OUTPUT]).toBeUndefined();
+    expect(recall.attributes[LangfuseOtelSpanAttributes.OBSERVATION_INPUT]).toBeUndefined();
+    expect(recall.attributes[LangfuseOtelSpanAttributes.OBSERVATION_OUTPUT]).toBeUndefined();
+  });
+
+  it('stamps the configured environment on every observation', async () => {
+    const scopedExporter = new InMemorySpanExporter();
+    const scoped = new LangfuseTelemetry(new SimpleSpanProcessor(scopedExporter), 'production');
+    try {
+      const trace = scoped.trace({ name: 'mcp-tool' });
+      trace.span({ name: 'search_memory' }).end();
+      trace.generation({ name: 'upstream', model: 'gpt-4o' }).end();
+      trace.end();
+
+      const spans = scopedExporter.getFinishedSpans();
+      expect(spans.map((span) => span.name).sort()).toEqual([
+        'mcp-tool',
+        'search_memory',
+        'upstream',
+      ]);
+      for (const span of spans) {
+        expect(span.attributes[LangfuseOtelSpanAttributes.ENVIRONMENT]).toBe('production');
+      }
+    } finally {
+      await scoped.shutdown();
+    }
+  });
+
+  it('leaves the environment unset when none is configured', () => {
+    const trace = telemetry.trace({ name: 'mcp-tool' });
+    trace.end();
+
+    expect(byName('mcp-tool').attributes[LangfuseOtelSpanAttributes.ENVIRONMENT]).toBeUndefined();
   });
 
   it('records generations with model and usage details', () => {
@@ -242,7 +310,7 @@ describe('LangfuseTelemetry', () => {
     const trace = telemetry.trace({ name: 'chat-turn' });
     const write = trace.span({ name: 'memory-write' });
     trace.end();
-    write.end({ written: 1 });
+    write.end({ metadata: { written: 1 } });
 
     const root = byName('chat-turn');
     const memoryWrite = byName('memory-write');

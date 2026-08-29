@@ -132,7 +132,7 @@ export function createProxyHandler(deps: ProxyDeps) {
       // document may not be written yet.
       const ctxSpan = trace.span({ name: 'resolve-context' });
       context = await memory.resolveContext(userId, conversationId, { retries: 1 });
-      ctxSpan.end({ project: context.projectName });
+      ctxSpan.end({ metadata: { project: context.projectName } });
 
       if (config.memory.recallEnabled) {
         const recallSpan = trace.span({ name: 'recall' });
@@ -144,9 +144,11 @@ export function createProxyHandler(deps: ProxyDeps) {
           const recalled = await memory.recall(context, query);
           const block = buildMemoryBlock(recalled, context, config.memory.maxContextChars);
           recallSpan.end({
-            count: recalled.length,
-            hasBlock: !!block,
-            cacheStats: memory.cacheStats.recall,
+            metadata: {
+              count: recalled.length,
+              hasBlock: !!block,
+              cacheStats: memory.cacheStats.recall,
+            },
           });
           if (block) {
             outgoing = adapter.inject(parsed, block);
@@ -156,7 +158,7 @@ export function createProxyHandler(deps: ProxyDeps) {
             );
           }
         } else {
-          recallSpan.end({ count: 0 });
+          recallSpan.end({ metadata: { count: 0 } });
         }
       }
     }
@@ -504,7 +506,7 @@ async function writeMemories(args: WriteArgs): Promise<void> {
     logger.error({ err: error }, 'post-turn memory write failed');
   } finally {
     // Always end the span exactly once, even if the catch block itself throws.
-    writeSpan.end(outcome);
+    writeSpan.end({ metadata: outcome });
   }
 }
 

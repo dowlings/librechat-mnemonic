@@ -64,6 +64,8 @@ export interface TelemetryConfig {
   publicKey?: string;
   secretKey?: string;
   baseUrl: string;
+  /** Langfuse environment bucket. Must match LibreChat's so traces group together. */
+  environment: string;
 }
 
 const rawSchema = z.object({
@@ -130,6 +132,16 @@ const rawSchema = z.object({
   LANGFUSE_PUBLIC_KEY: z.string().optional(),
   LANGFUSE_SECRET_KEY: z.string().optional(),
   LANGFUSE_BASE_URL: z.string().optional().default('https://cloud.langfuse.com'),
+  /**
+   * Defaults to `production` to match LibreChat's own agent traces — without
+   * it Langfuse files these traces under `default` and the two services cannot
+   * be filtered together. Blank (an unset compose variable) is treated as
+   * unset rather than shipping an empty environment name.
+   */
+  LANGFUSE_ENVIRONMENT: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? 'production' : v.trim())),
 });
 
 export interface AppConfig {
@@ -312,6 +324,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       publicKey: raw.LANGFUSE_PUBLIC_KEY,
       secretKey: raw.LANGFUSE_SECRET_KEY,
       baseUrl: raw.LANGFUSE_BASE_URL,
+      environment: raw.LANGFUSE_ENVIRONMENT,
     },
   };
 }
