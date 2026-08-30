@@ -30,6 +30,9 @@ export function createApp(deps: ServerDeps): Express {
         ...memory.cacheStats,
         settings: store.settingsCacheStats,
       },
+      // Call counters, so "is mnemonic timing out?" is answerable with a curl
+      // rather than by grepping logs.
+      mnemonic: memory.mnemonicStats,
     });
   });
 

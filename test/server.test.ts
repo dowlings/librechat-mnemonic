@@ -31,6 +31,8 @@ const baseConfig: AppConfig = {
     minSimilarity: 0.3,
     timeoutMs: 20000,
     tag: 'librechat',
+    slowCallMs: 5_000,
+    statsIntervalMs: 0,
   },
   memory: {
     defaultEnabled: true,
@@ -78,7 +80,28 @@ function createMockMemory(cacheStats: {
   noteBody: { hits: number; misses: number; size: number; hitRate: number };
   recall: { hits: number; misses: number; size: number; hitRate: number };
 }) {
-  return { cacheStats };
+  return {
+    cacheStats,
+    mnemonicStats: {
+      connected: true,
+      connects: 1,
+      transportErrors: 0,
+      circuitOpenMs: 0,
+      inFlight: { read: 0, write: 1 },
+      timeoutMs: 20_000,
+      slowCallMs: 5_000,
+      tools: {
+        recall: {
+          calls: 9,
+          errors: 1,
+          timeouts: 1,
+          totalMs: 900,
+          maxMs: 20_000,
+          maxQueueWaitMs: 4,
+        },
+      },
+    },
+  };
 }
 
 async function listen(
@@ -123,6 +146,30 @@ describe('/healthz', () => {
       expect(body.cache.noteBody).toEqual(memory.cacheStats.noteBody);
       expect(body.cache.recall).toEqual(memory.cacheStats.recall);
       expect(body.cache.settings).toEqual(store.settingsCacheStats);
+    } finally {
+      await close();
+    }
+  });
+
+  it('exposes mnemonic call stats so timeouts are visible without log access', async () => {
+    const memory = createMockMemory({
+      noteBody: { hits: 1, misses: 1, size: 1, hitRate: 0.5 },
+      recall: { hits: 1, misses: 1, size: 1, hitRate: 0.5 },
+    });
+    const store = createMockStore({ hits: 1, misses: 1, size: 1, hitRate: 0.5 });
+
+    const app = createApp({
+      config: baseConfig,
+      store: store as never,
+      memory: memory as never,
+      telemetry: createTelemetry(baseConfig.telemetry),
+    });
+
+    const { url, close } = await listen(app);
+    try {
+      const res = await fetch(`${url}/healthz`);
+      const body = (await res.json()) as { mnemonic: Record<string, unknown> };
+      expect(body.mnemonic).toEqual(memory.mnemonicStats);
     } finally {
       await close();
     }

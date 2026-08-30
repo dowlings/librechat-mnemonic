@@ -31,6 +31,8 @@ const baseConfig: AppConfig = {
     minSimilarity: 0.3,
     timeoutMs: 20000,
     tag: 'librechat',
+    slowCallMs: 5_000,
+    statsIntervalMs: 0,
   },
   memory: {
     defaultEnabled: true,

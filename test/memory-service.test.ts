@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MemoryService } from '../src/memory/service.js';
 import type { AppConfig } from '../src/config.js';
+import { logger } from '../src/logger.js';
 import type { MnemonicResult } from '../src/mnemonic/client.js';
 import type { GetResponse, RecallResponse, RememberResponse } from '../src/memory/types.js';
 
@@ -31,6 +32,8 @@ const baseConfig: AppConfig = {
     minSimilarity: 0.3,
     timeoutMs: 20000,
     tag: 'librechat',
+    slowCallMs: 5_000,
+    statsIntervalMs: 0,
   },
   memory: {
     defaultEnabled: true,
@@ -443,5 +446,56 @@ describe('MemoryService.recall — cache behaviour', () => {
 
     const stats = service.cacheStats;
     expect(stats.recall.hits).toBeGreaterThanOrEqual(1);
+  });
+
+  it('exposes mnemonic call stats for monitoring', () => {
+    const mnemonic = createMockMnemonic();
+    (mnemonic as unknown as { stats: unknown }).stats = { tools: { recall: { calls: 3 } } };
+    const store = createMockStore();
+    const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+    expect(service.mnemonicStats).toEqual({ tools: { recall: { calls: 3 } } });
+  });
+});
+
+describe('MemoryService.recall — latency logging', () => {
+  it('splits the search round-trip from the body hydration', async () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    try {
+      const mnemonic = createMockMnemonic({
+        recallResults: [makeResult('note-1', 'Test note', 0.9)],
+      });
+      const store = createMockStore();
+      const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+      await service.recall(context, 'test query');
+
+      // Recall is two mnemonic round-trips; the log has to show both so a slow
+      // recall is attributable to the search or to the body fetch.
+      const complete = debugSpy.mock.calls.find((call) => call[1] === 'recall complete');
+      expect(complete).toBeDefined();
+      const detail = complete![0] as Record<string, unknown>;
+      expect(detail).toMatchObject({ count: 1, scope: 'all' });
+      expect(typeof detail.searchMs).toBe('number');
+      expect(typeof detail.hydrateMs).toBe('number');
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  it('logs a zero-result recall without pretending it hydrated anything', async () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    try {
+      const mnemonic = createMockMnemonic({ recallResults: [] });
+      const store = createMockStore();
+      const service = new MemoryService(baseConfig, mnemonic as never, store as never);
+
+      await service.recall(context, 'test query');
+
+      const complete = debugSpy.mock.calls.find((call) => call[1] === 'recall complete');
+      expect(complete![0]).toMatchObject({ count: 0, hydrateMs: 0 });
+    } finally {
+      debugSpy.mockRestore();
+    }
   });
 });

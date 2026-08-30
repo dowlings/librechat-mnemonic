@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import type { Request, Response } from 'express';
 
 import type { AppConfig, UpstreamConfig } from '../config.js';
@@ -151,12 +153,23 @@ export function createProxyHandler(deps: ProxyDeps) {
 
     let context: MemoryContext | undefined;
     if (conversationId && memoryEnabled) {
+      /*
+       * Everything in this block runs before a single token reaches the user,
+       * so its cost is latency the user feels directly. Timed as two phases and
+       * logged together at the end — a turn that felt slow is then attributable
+       * from the logs alone, without Langfuse.
+       */
+      const preludeStartedAt = performance.now();
+
       // One retry: on the first turn of a brand new chat the conversation
       // document may not be written yet.
       const ctxSpan = trace.span({ name: 'resolve-context' });
       context = await memory.resolveContext(userId, conversationId, { retries: 1 });
       ctxSpan.end({ metadata: { project: context.projectName } });
+      const contextMs = Math.round(performance.now() - preludeStartedAt);
 
+      let recalledCount = 0;
+      const recallStartedAt = performance.now();
       if (config.memory.recallEnabled) {
         const recallSpan = trace.span({ name: 'recall' });
         const query = buildRecallQuery(messages, {
@@ -165,6 +178,7 @@ export function createProxyHandler(deps: ProxyDeps) {
         });
         if (query) {
           const recalled = await memory.recall(context, query);
+          recalledCount = recalled.length;
           const block = buildMemoryBlock(recalled, context, config.memory.maxContextChars);
           recallSpan.end({
             metadata: {
@@ -183,6 +197,24 @@ export function createProxyHandler(deps: ProxyDeps) {
         } else {
           recallSpan.end({ metadata: { count: 0 } });
         }
+      }
+
+      const recallMs = Math.round(performance.now() - recallStartedAt);
+      const totalMs = contextMs + recallMs;
+      const detail = {
+        conversationId,
+        project: context.projectName,
+        contextMs,
+        recallMs,
+        totalMs,
+        count: recalledCount,
+      };
+      // Same threshold as a slow mnemonic call: past it, the delay is the
+      // user's problem too, so it belongs at a level operators actually run.
+      if (totalMs >= config.mnemonic.slowCallMs) {
+        logger.warn(detail, 'memory added significant latency to a chat turn');
+      } else {
+        logger.debug(detail, 'memory prelude complete');
       }
     }
 
@@ -497,6 +529,8 @@ async function writeMemories(args: WriteArgs): Promise<void> {
   const { config, memory, context, userText, assistantText, trace } = args;
   const writeSpan = trace.span({ name: 'memory-write' });
   let outcome: Record<string, unknown> = { candidates: 0 };
+  const startedAt = performance.now();
+  let extractMs = 0;
   try {
     let candidates =
       config.memory.writeMode === 'explicit'
@@ -506,6 +540,7 @@ async function writeMemories(args: WriteArgs): Promise<void> {
             { user: userText, assistant: assistantText, project: context.projectName },
             config,
           );
+    extractMs = Math.round(performance.now() - startedAt);
 
     if (candidates.length === 0) return;
     candidates = candidates.slice(0, config.memory.maxPerTurn);
@@ -520,13 +555,31 @@ async function writeMemories(args: WriteArgs): Promise<void> {
     // The context was resolved before the turn; re-resolve so a chat created
     // inside a project on this very turn still lands in the right place.
     const fresh = await memory.resolveContext(context.userId, context.conversationId);
+    const saveStartedAt = performance.now();
     for (const candidate of candidates) {
       await memory.save(fresh, candidate);
     }
-    outcome = { candidates: candidates.length, cacheStats: memory.cacheStats.noteBody };
+    const saveMs = Math.round(performance.now() - saveStartedAt);
+    outcome = {
+      candidates: candidates.length,
+      extractMs,
+      saveMs,
+      totalMs: Math.round(performance.now() - startedAt),
+      cacheStats: memory.cacheStats.noteBody,
+    };
+    /*
+     * Detached, so this never slows the user's turn — but each candidate costs
+     * a dedupe recall plus a write on the serialised write queue, and that is
+     * exactly the backlog the *next* turn's recall can end up queued behind.
+     */
+    logger.debug(outcome, 'post-turn memory write complete');
   } catch (error) {
-    outcome = { error: 'write-failed' };
-    logger.error({ err: error }, 'post-turn memory write failed');
+    outcome = {
+      error: 'write-failed',
+      extractMs,
+      totalMs: Math.round(performance.now() - startedAt),
+    };
+    logger.error({ err: error, ...outcome }, 'post-turn memory write failed');
   } finally {
     // Always end the span exactly once, even if the catch block itself throws.
     writeSpan.end({ metadata: outcome });

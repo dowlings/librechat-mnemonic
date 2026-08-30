@@ -97,6 +97,18 @@ const rawSchema = z.object({
   MNEMONIC_MIN_SIMILARITY: num(0.3),
   MNEMONIC_TIMEOUT_MS: int(20000),
   MNEMONIC_TAG: z.string().optional().default('librechat'),
+  /**
+   * A call slower than this is logged at `warn` with its phase breakdown, and
+   * a warning is emitted while it is *still running* rather than only once it
+   * finishes. Defaults to a quarter of the default timeout so a call on its way
+   * to timing out is visible long before it gets there.
+   */
+  MNEMONIC_SLOW_CALL_MS: positiveInt(5_000),
+  /**
+   * Periodic mnemonic call-stats summary at `info`, covering the interval just
+   * elapsed as well as the lifetime totals. 0 disables it.
+   */
+  MNEMONIC_STATS_INTERVAL_MS: int(0),
 
   // ── Behaviour ──────────────────────────────────────────────────────────────
   MEMORY_DEFAULT_ENABLED: bool(true),
@@ -173,6 +185,8 @@ export interface AppConfig {
     minSimilarity: number;
     timeoutMs: number;
     tag: string;
+    slowCallMs: number;
+    statsIntervalMs: number;
   };
   memory: {
     defaultEnabled: boolean;
@@ -297,6 +311,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       minSimilarity: raw.MNEMONIC_MIN_SIMILARITY,
       timeoutMs: raw.MNEMONIC_TIMEOUT_MS,
       tag: raw.MNEMONIC_TAG,
+      slowCallMs: raw.MNEMONIC_SLOW_CALL_MS,
+      statsIntervalMs: raw.MNEMONIC_STATS_INTERVAL_MS,
     },
     memory: {
       defaultEnabled: raw.MEMORY_DEFAULT_ENABLED,

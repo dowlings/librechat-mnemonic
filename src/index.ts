@@ -39,8 +39,35 @@ async function main(): Promise<void> {
     );
   });
 
+  /*
+   * Opt-in heartbeat. The per-call lines only appear at `debug` (or when a call
+   * is slow or fails), which is the right default for a busy proxy — but it
+   * leaves an operator running at `info` with no baseline to compare a bad
+   * period against. This prints one.
+   *
+   * `window` covers only the interval just elapsed, so a bad minute shows up as
+   * a bad minute; `lifetime` is the same cumulative view `/healthz` serves, kept
+   * alongside it as the baseline to compare against. The two are named rather
+   * than merged because a lifetime `maxMs` and a per-minute one answer
+   * different questions and are easy to confuse.
+   */
+  let statsTimer: NodeJS.Timeout | undefined;
+  if (config.mnemonic.statsIntervalMs > 0) {
+    statsTimer = setInterval(() => {
+      logger.info(
+        {
+          window: memory.takeMnemonicWindowStats(),
+          lifetime: { mnemonic: memory.mnemonicStats, cache: memory.cacheStats },
+        },
+        'mnemonic call stats',
+      );
+    }, config.mnemonic.statsIntervalMs);
+    statsTimer.unref();
+  }
+
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
+    if (statsTimer) clearInterval(statsTimer);
     server.close();
     await Promise.allSettled([telemetry.flush(), mnemonic.close(), store.close()]);
     process.exit(0);

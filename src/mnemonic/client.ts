@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -5,6 +7,143 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { AppConfig } from '../config.js';
 import { logger } from '../logger.js';
 import { activeSpan, type Span } from '../telemetry.js';
+
+type QueueName = 'read' | 'write';
+
+/** Where a call spent its time, in the order the phases happen. */
+export type CallPhase = 'queue' | 'connect' | 'mnemonic';
+
+export type CallOutcome = 'ok' | 'timeout' | 'tool_error' | 'unavailable' | 'error';
+
+/** Per-tool counters, exposed on `/healthz` and in the periodic stats log. */
+export interface ToolStats {
+  calls: number;
+  errors: number;
+  timeouts: number;
+  totalMs: number;
+  maxMs: number;
+  maxQueueWaitMs: number;
+}
+
+/**
+ * Counters for the period since they were last read, for the periodic
+ * heartbeat. The lifetime totals on `/healthz` are the right answer to "how is
+ * this instance doing", but the wrong one for "is it bad *right now*": a spike
+ * is a small change in a growing average, and a lifetime `maxMs` stays pinned
+ * at the worst call since boot. These reset on every read, so each heartbeat
+ * line describes only the period it covers.
+ */
+export interface MnemonicWindowStats {
+  /** How long this window covers — the gap since the previous read. */
+  windowMs: number;
+  connects: number;
+  transportErrors: number;
+  inFlight: Record<QueueName, number>;
+  tools: Record<string, ToolStats>;
+}
+
+export interface MnemonicStats {
+  connected: boolean;
+  /** Connection attempts that succeeded. >1 means the connection was re-established. */
+  connects: number;
+  transportErrors: number;
+  /** Milliseconds until the circuit breaker closes again; 0 when it is closed. */
+  circuitOpenMs: number;
+  /** Calls queued or running right now, per queue — the contention signal. */
+  inFlight: Record<QueueName, number>;
+  timeoutMs: number;
+  slowCallMs: number;
+  tools: Record<string, ToolStats>;
+}
+
+/** A single call's phase breakdown. Undefined phases were never reached. */
+interface CallTiming {
+  totalMs: number;
+  queueWaitMs: number;
+  connectMs?: number;
+  callMs?: number;
+}
+
+/**
+ * MCP's JSON-RPC code for a request that blew its deadline. The SDK raises it
+ * as `McpError` both for the per-request timeout we set and for its own
+ * maximum-total-timeout guard, so the code is the reliable signal — the message
+ * differs between the two.
+ */
+const MCP_REQUEST_TIMEOUT = -32001;
+
+/**
+ * Did this call fail because it ran out of time, as opposed to mnemonic
+ * rejecting it? Timeouts and tool errors need very different fixes, so they get
+ * separated at the point where the distinction is still available.
+ */
+export function isMnemonicTimeout(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if ((error as { code?: unknown }).code === MCP_REQUEST_TIMEOUT) return true;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' && /timed out|timeout exceeded/i.test(message);
+}
+
+/** Millisecond delta, rounded — sub-millisecond precision is noise in a log line. */
+function since(start: number): number {
+  return Math.round(performance.now() - start);
+}
+
+/**
+ * The phase that ate the most wall clock. This is the whole point of the
+ * breakdown: a timeout blamed on `queue` is a concurrency problem in this
+ * service, on `connect` a transport problem, on `mnemonic` a problem in
+ * mnemonic itself (usually embedding or vector search).
+ */
+function slowestPhase(timing: CallTiming): CallPhase {
+  const phases: Array<[CallPhase, number]> = [
+    ['queue', timing.queueWaitMs],
+    ['connect', timing.connectMs ?? 0],
+    ['mnemonic', timing.callMs ?? 0],
+  ];
+  return phases.reduce((worst, phase) => (phase[1] > worst[1] ? phase : worst))[0];
+}
+
+function emptyToolStats(): ToolStats {
+  return { calls: 0, errors: 0, timeouts: 0, totalMs: 0, maxMs: 0, maxQueueWaitMs: 0 };
+}
+
+/** Fold one finished call into a counter set. Used for both the lifetime and window totals. */
+function accumulate(
+  into: Map<string, ToolStats>,
+  tool: string,
+  timing: CallTiming,
+  outcome: CallOutcome,
+): void {
+  const stats = into.get(tool) ?? emptyToolStats();
+  stats.calls += 1;
+  stats.totalMs += timing.totalMs;
+  stats.maxMs = Math.max(stats.maxMs, timing.totalMs);
+  stats.maxQueueWaitMs = Math.max(stats.maxQueueWaitMs, timing.queueWaitMs);
+  if (outcome !== 'ok') stats.errors += 1;
+  if (outcome === 'timeout') stats.timeouts += 1;
+  into.set(tool, stats);
+}
+
+/**
+ * A failed call is one of four different problems. Naming which one in the log
+ * line is the difference between "memory is broken again" and a diagnosis.
+ */
+function classifyOutcome(error: unknown): CallOutcome {
+  /*
+   * Order matters. A `MnemonicToolError` means mnemonic answered and rejected
+   * the call, whatever its text says — and its message embeds mnemonic's own
+   * error text, which for a slow embedding backend routinely contains "timed
+   * out". Checking `isMnemonicTimeout` first would file that as a timeout, at
+   * `error` level and in `stats.timeouts`, which is exactly the confusion this
+   * classification exists to remove.
+   */
+  if (error instanceof MnemonicToolError) return 'tool_error';
+  if (isMnemonicTimeout(error)) return 'timeout';
+  const message = error instanceof Error ? error.message : '';
+  if (/circuit open|unavailable/i.test(message)) return 'unavailable';
+  return 'error';
+}
 
 /**
  * A thin MCP client for mnemonic.
@@ -37,7 +176,45 @@ export class MnemonicClient {
   /** Tools that mutate the vault and must not run concurrently. */
   private static readonly WRITE_TOOLS = new Set(['remember', 'forget', 'update']);
 
+  // ── Diagnostics ────────────────────────────────────────────────────────────
+  // Everything below exists to answer one question from the logs alone: when a
+  // call times out, was it waiting behind other calls, waiting on a connection,
+  // or waiting on mnemonic?
+
+  /** Calls queued or running, per queue. Read at enqueue time as the depth ahead. */
+  private readonly inFlight: Record<QueueName, number> = { read: 0, write: 0 };
+  private callSeq = 0;
+  private connects = 0;
+  private transportErrors = 0;
+  private readonly toolStats = new Map<string, ToolStats>();
+
+  // The same counters again, reset every time the heartbeat reads them, so a
+  // bad minute shows up as a bad minute rather than as a nudge to a lifetime
+  // average. See `MnemonicWindowStats`.
+  private windowConnects = 0;
+  private windowTransportErrors = 0;
+  private windowStartedAt = Date.now();
+  private windowToolStats = new Map<string, ToolStats>();
+
+  /**
+   * The last few lines mnemonic wrote to stderr. They are logged at `debug`
+   * as they arrive, which is useless at the `info` level people actually run
+   * in production — so they are also kept here and attached to the log line
+   * for a call that times out, where they are usually the explanation.
+   */
+  private readonly recentStderr: string[] = [];
+  private static readonly STDERR_BUFFER = 20;
+
   constructor(private readonly config: AppConfig) {}
+
+  private noteStderr(chunk: string): void {
+    for (const line of chunk.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      this.recentStderr.push(trimmed.slice(0, 500));
+    }
+    while (this.recentStderr.length > MnemonicClient.STDERR_BUFFER) this.recentStderr.shift();
+  }
 
   private async connect(): Promise<Client> {
     if (this.client) return this.client;
@@ -48,6 +225,7 @@ export class MnemonicClient {
 
     if (this.connecting) return this.connecting;
 
+    const startedAt = performance.now();
     this.connecting = (async () => {
       const client = new Client(
         { name: 'librechat-mnemonic', version: '0.1.0' },
@@ -60,7 +238,10 @@ export class MnemonicClient {
           requestInit: { headers: this.config.mnemonic.headers },
         });
         await client.connect(transport);
-        logger.info({ url: url.origin }, 'connected to remote mnemonic');
+        logger.info(
+          { url: url.origin, durationMs: since(startedAt), attempt: this.connects + 1 },
+          'connected to remote mnemonic',
+        );
       } else {
         const transport = new StdioClientTransport({
           command: this.config.mnemonic.command,
@@ -77,26 +258,48 @@ export class MnemonicClient {
          * must degrade to "no memory", not to "no chat".
          */
         transport.onerror = (error) => {
-          logger.error({ err: error }, 'mnemonic transport error');
+          this.transportErrors += 1;
+          this.windowTransportErrors += 1;
+          logger.error(
+            {
+              err: error,
+              transportErrors: this.transportErrors,
+              inFlight: { ...this.inFlight },
+              recentStderr: this.recentStderr.slice(-5),
+            },
+            'mnemonic transport error',
+          );
           this.client = null;
           this.breakerOpenUntil = Date.now() + MnemonicClient.BREAKER_COOLDOWN_MS;
         };
         await client.connect(transport);
         transport.stderr?.on('data', (chunk: Buffer) => {
-          logger.debug({ mnemonic: chunk.toString().trimEnd() }, 'mnemonic stderr');
+          const text = chunk.toString().trimEnd();
+          this.noteStderr(text);
+          logger.debug({ mnemonic: text }, 'mnemonic stderr');
         });
         logger.info(
-          { command: this.config.mnemonic.command, vault: this.config.mnemonic.vaultPath },
+          {
+            command: this.config.mnemonic.command,
+            vault: this.config.mnemonic.vaultPath,
+            durationMs: since(startedAt),
+            attempt: this.connects + 1,
+          },
           'spawned mnemonic',
         );
       }
 
       client.onclose = () => {
-        logger.warn('mnemonic connection closed; will reconnect on next call');
+        logger.warn(
+          { inFlight: { ...this.inFlight }, recentStderr: this.recentStderr.slice(-5) },
+          'mnemonic connection closed; will reconnect on next call',
+        );
         this.client = null;
       };
 
       this.client = client;
+      this.connects += 1;
+      this.windowConnects += 1;
       this.breakerOpenUntil = 0;
       return client;
     })();
@@ -107,7 +310,13 @@ export class MnemonicClient {
       this.client = null;
       this.breakerOpenUntil = Date.now() + MnemonicClient.BREAKER_COOLDOWN_MS;
       logger.error(
-        { err: error, mode: this.config.mnemonic.mode },
+        {
+          err: error,
+          mode: this.config.mnemonic.mode,
+          durationMs: since(startedAt),
+          cooldownMs: MnemonicClient.BREAKER_COOLDOWN_MS,
+          recentStderr: this.recentStderr.slice(-5),
+        },
         'mnemonic connection failed; pausing memory operations',
       );
       throw error;
@@ -145,10 +354,14 @@ export class MnemonicClient {
    */
   async call<T = unknown>(tool: string, args: Record<string, unknown>): Promise<MnemonicResult<T>> {
     const isWrite = MnemonicClient.WRITE_TOOLS.has(tool);
+    const queue: QueueName = isWrite ? 'write' : 'read';
+    const timeoutMs = this.config.mnemonic.timeoutMs;
+    const slowCallMs = this.config.mnemonic.slowCallMs;
+
     const parent = activeSpan();
     const attributes = {
       'mnemonic.tool': tool,
-      'mnemonic.timeout_ms': this.config.mnemonic.timeoutMs,
+      'mnemonic.timeout_ms': timeoutMs,
     };
 
     // Opened before joining the queue and closed when the work actually starts,
@@ -156,7 +369,7 @@ export class MnemonicClient {
     // number that distinguishes a slow mnemonic from a contended one.
     const queueSpan = parent.span({
       name: 'queue_wait',
-      metadata: { ...attributes, 'mnemonic.queue': isWrite ? 'write' : 'read' },
+      metadata: { ...attributes, 'mnemonic.queue': queue },
     });
     let queueSpanOpen = true;
     const endQueueSpan = () => {
@@ -166,26 +379,170 @@ export class MnemonicClient {
       }
     };
 
+    const callId = ++this.callSeq;
+    // Read before the increment: this is how many calls are ahead of this one.
+    const queueDepth = this.inFlight[queue];
+    this.inFlight[queue] += 1;
+
+    const enqueuedAt = performance.now();
+    let startedAt: number | undefined;
+    let connectedAt: number | undefined;
+
+    const identity = { callId, tool, queue, queueDepth, timeoutMs };
+    logger.debug(identity, 'mnemonic call queued');
+
+    const timing = (): CallTiming => {
+      const totalMs = since(enqueuedAt);
+      if (startedAt === undefined) return { totalMs, queueWaitMs: totalMs };
+      const queueWaitMs = Math.round(startedAt - enqueuedAt);
+      if (connectedAt === undefined) {
+        return { totalMs, queueWaitMs, connectMs: totalMs - queueWaitMs };
+      }
+      return {
+        totalMs,
+        queueWaitMs,
+        connectMs: Math.round(connectedAt - startedAt),
+        callMs: Math.round(performance.now() - connectedAt),
+      };
+    };
+
+    /*
+     * A wedged mnemonic produces no log line at all until its timeout finally
+     * trips — by which point the chat turn is already ruined and the operator
+     * is looking at a gap. This fires while the call is still running and says
+     * which phase it is stuck in.
+     */
+    const watchdog = setTimeout(() => {
+      const current = timing();
+      logger.warn(
+        { ...identity, ...current, phase: slowestPhase(current), inFlight: { ...this.inFlight } },
+        'mnemonic call still in flight',
+      );
+    }, slowCallMs);
+    watchdog.unref?.();
+
     try {
-      return await this.serialise(async () => {
+      const result = await this.serialise(async () => {
+        startedAt = performance.now();
         endQueueSpan();
         const client = await this.connectTraced(parent, attributes);
-        const result = await client.callTool({ name: tool, arguments: args }, undefined, {
-          timeout: this.config.mnemonic.timeoutMs,
+        connectedAt = performance.now();
+        const response = await client.callTool({ name: tool, arguments: args }, undefined, {
+          timeout: timeoutMs,
         });
 
-        const text = extractText(result as { content?: unknown });
-        if (result.isError) {
+        const text = extractText(response as { content?: unknown });
+        if (response.isError) {
           throw new MnemonicToolError(tool, text || 'unknown mnemonic error');
         }
 
-        return { structured: result.structuredContent as T | undefined, text };
+        return { structured: response.structuredContent as T | undefined, text };
       }, isWrite);
+
+      this.report(identity, timing(), 'ok');
+      return result;
+    } catch (error) {
+      this.report(identity, timing(), classifyOutcome(error), error);
+      throw error;
     } finally {
+      clearTimeout(watchdog);
+      this.inFlight[queue] -= 1;
       // The queue span is normally closed when the work starts; this covers the
       // case where the call never got that far.
       endQueueSpan();
     }
+  }
+
+  /**
+   * One log line per completed call, at a level that matches how bad it was,
+   * plus the counters behind `/healthz`. Kept in one place so every exit path
+   * from `call()` produces the same fields.
+   */
+  private report(
+    identity: {
+      callId: number;
+      tool: string;
+      queue: QueueName;
+      queueDepth: number;
+      timeoutMs: number;
+    },
+    timing: CallTiming,
+    outcome: CallOutcome,
+    error?: unknown,
+  ): void {
+    accumulate(this.toolStats, identity.tool, timing, outcome);
+    accumulate(this.windowToolStats, identity.tool, timing, outcome);
+
+    /*
+     * `inFlight` means the same thing on every line that carries it: the live
+     * per-queue depth at the instant the line was written, this call included
+     * (`call()`'s finally block has not run yet). The watchdog logs it the same
+     * way, so a lone stuck call reads `{read: 1}` in both places rather than
+     * `1` from one line and `0` from the other.
+     */
+    const detail = {
+      ...identity,
+      ...timing,
+      outcome,
+      phase: slowestPhase(timing),
+      inFlight: { ...this.inFlight },
+    };
+
+    if (outcome === 'timeout') {
+      logger.error(
+        { ...detail, err: error, recentStderr: this.recentStderr.slice(-10) },
+        'mnemonic call timed out',
+      );
+      return;
+    }
+    if (outcome !== 'ok') {
+      logger.warn({ ...detail, err: error }, 'mnemonic call failed');
+      return;
+    }
+    if (timing.totalMs >= this.config.mnemonic.slowCallMs) {
+      logger.warn(detail, 'slow mnemonic call');
+      return;
+    }
+    logger.debug(detail, 'mnemonic call complete');
+  }
+
+  /** Snapshot for `/healthz` and the periodic stats log. */
+  get stats(): MnemonicStats {
+    const openFor = this.breakerOpenUntil - Date.now();
+    return {
+      connected: this.client !== null,
+      connects: this.connects,
+      transportErrors: this.transportErrors,
+      circuitOpenMs: openFor > 0 ? openFor : 0,
+      inFlight: { ...this.inFlight },
+      timeoutMs: this.config.mnemonic.timeoutMs,
+      slowCallMs: this.config.mnemonic.slowCallMs,
+      tools: Object.fromEntries([...this.toolStats].map(([tool, stat]) => [tool, { ...stat }])),
+    };
+  }
+
+  /**
+   * Counters since this was last called, then reset. Reading is destructive on
+   * purpose: the heartbeat is the only caller, and a window that overlapped the
+   * previous one would reintroduce exactly the smearing it exists to avoid.
+   * `/healthz` keeps the lifetime totals.
+   */
+  takeWindowStats(): MnemonicWindowStats {
+    const now = Date.now();
+    const window: MnemonicWindowStats = {
+      windowMs: now - this.windowStartedAt,
+      connects: this.windowConnects,
+      transportErrors: this.windowTransportErrors,
+      inFlight: { ...this.inFlight },
+      tools: Object.fromEntries(
+        [...this.windowToolStats].map(([tool, stat]) => [tool, { ...stat }]),
+      ),
+    };
+    this.windowStartedAt = now;
+    this.windowConnects = 0;
+    this.windowTransportErrors = 0;
+    this.windowToolStats = new Map();
+    return window;
   }
 
   /**

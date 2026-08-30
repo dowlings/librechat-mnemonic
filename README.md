@@ -191,8 +191,10 @@ Everything is environment driven. Only `LIBRECHAT_MONGO_URI` and `UPSTREAMS` hav
 | `MNEMONIC_RECALL_SCOPE` | `all` | `project` isolates, `all` boosts the current project, `global` returns the whole main vault. See the table above. |
 | `MNEMONIC_RECALL_LIMIT` | `6` | Memories retrieved per turn |
 | `MNEMONIC_MIN_SIMILARITY` | `0.3` | Similarity floor passed to recall |
-| `MNEMONIC_TIMEOUT_MS` | `20000` | Per-call timeout |
+| `MNEMONIC_TIMEOUT_MS` | `20000` | Per-call timeout. Applies to the mnemonic round-trip only — time spent queued behind other calls is on top of it. |
 | `MNEMONIC_TAG` | `librechat` | Tag added to everything this service writes |
+| `MNEMONIC_SLOW_CALL_MS` | `5000` | A call past this is logged at `warn` with its phase breakdown, and warned about while it is still running. Also the threshold for the per-turn memory latency warning. |
+| `MNEMONIC_STATS_INTERVAL_MS` | `0` | Periodic call-stats summary at `info`. `0` disables it. |
 
 mnemonic's own variables (`EMBED_PROVIDER`, `OLLAMA_URL`, `EMBED_MODEL`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DISABLE_GIT`, …) are passed through to the spawned process. See [mnemonic's configuration](https://github.com/danielmarbach/mnemonic#configuration).
 
@@ -266,7 +268,7 @@ When either key is missing, telemetry is a no-op with zero overhead.
 
 ### `/healthz`
 
-Returns JSON with service status, upstream names, telemetry status, and cache stats for all three caches:
+Returns JSON with service status, upstream names, telemetry status, cache stats for all three caches, and mnemonic call counters:
 
 ```json
 {
@@ -277,9 +279,87 @@ Returns JSON with service status, upstream names, telemetry status, and cache st
     "noteBody": { "hits": 42, "misses": 3, "size": 12, "hitRate": 0.93 },
     "recall": { "hits": 8, "misses": 15, "size": 5, "hitRate": 0.35 },
     "settings": { "hits": 120, "misses": 6, "size": 9, "hitRate": 0.95 }
+  },
+  "mnemonic": {
+    "connected": true,
+    "connects": 1,
+    "transportErrors": 0,
+    "circuitOpenMs": 0,
+    "inFlight": { "read": 0, "write": 1 },
+    "timeoutMs": 20000,
+    "slowCallMs": 5000,
+    "tools": {
+      "recall": {
+        "calls": 214,
+        "errors": 3,
+        "timeouts": 3,
+        "totalMs": 96400,
+        "maxMs": 20001,
+        "maxQueueWaitMs": 8600
+      }
+    }
   }
 }
 ```
+
+`connects` above 1 means the connection has been re-established — a spawned mnemonic that crashed, or a dropped HTTP session. `maxQueueWaitMs` approaching `timeoutMs` means the calls are queueing, not the vault being slow.
+
+### Debugging mnemonic timeouts
+
+Every mnemonic call is logged with a phase breakdown, so a timeout is attributable without Langfuse:
+
+```json
+{
+  "level": 50,
+  "callId": 417,
+  "tool": "recall",
+  "queue": "read",
+  "queueDepth": 2,
+  "queueWaitMs": 11840,
+  "connectMs": 0,
+  "callMs": 20001,
+  "totalMs": 31841,
+  "outcome": "timeout",
+  "phase": "mnemonic",
+  "inFlight": { "read": 2, "write": 1 },
+  "recentStderr": ["..."],
+  "msg": "mnemonic call timed out"
+}
+```
+
+| Field | What it tells you |
+| --- | --- |
+| `queueWaitMs` | Time spent behind other calls on the same queue. Large here means this service serialised itself — see `queueDepth` and `inFlight`. |
+| `connectMs` | MCP connection setup. Near zero when the connection is reused; large means the transport is the problem. |
+| `callMs` | The mnemonic round-trip itself: embedding, vector search, git commit. This is what `MNEMONIC_TIMEOUT_MS` bounds. |
+| `phase` | Whichever of the three consumed the most time — the one-word diagnosis. |
+| `inFlight` | Live per-queue depth when the line was written, this call included — the same meaning on every line that carries it. |
+| `outcome` | `ok`, `timeout`, `tool_error` (mnemonic rejected the call), `unavailable` (circuit breaker open), or `error`. A tool error is mnemonic answering, so it stays a `tool_error` even when its text says "timed out". |
+| `recentStderr` | The last few lines mnemonic wrote to stderr, attached to timeouts and connection failures because that is usually where the explanation is. |
+
+Levels are chosen so the useful lines survive `LOG_LEVEL=info`:
+
+| Level | Message | When |
+| --- | --- | --- |
+| `error` | `mnemonic call timed out` | The call blew `MNEMONIC_TIMEOUT_MS` |
+| `warn` | `mnemonic call still in flight` | Still running after `MNEMONIC_SLOW_CALL_MS` — fires *before* the timeout, so a wedged mnemonic is not a silent 20-second gap |
+| `warn` | `slow mnemonic call` | Finished, but past `MNEMONIC_SLOW_CALL_MS` |
+| `warn` | `mnemonic call failed` | Any non-timeout failure |
+| `warn` | `memory added significant latency to a chat turn` | Context resolution plus recall cost more than `MNEMONIC_SLOW_CALL_MS` before the model was even called |
+| `debug` | `mnemonic call queued` / `mnemonic call complete` | Every call |
+| `debug` | `recall complete` | Recall's two round-trips split into `searchMs` and `hydrateMs` |
+| `debug` | `post-turn memory write complete` | Detached write: `extractMs`, `saveMs` |
+
+Set `LOG_LEVEL=debug` for the per-call lines, or `MNEMONIC_STATS_INTERVAL_MS=60000` for a once-a-minute summary at `info` without the volume. That summary carries two views:
+
+- `window` — counters for the interval just elapsed, reset each time it prints. This is the one to watch: a bad minute has its own `calls`/`timeouts`/`maxMs`, rather than nudging a lifetime average.
+- `lifetime` — the same cumulative totals `/healthz` serves, kept alongside as the baseline to compare the window against.
+
+Reading the result:
+
+- **`phase: "queue"` with a high `queueDepth`** — calls are backing up in this service, not in mnemonic. Reads and writes have separate queues but each is serialised, so a burst of concurrent chats queues behind itself. Check whether post-turn writes (each one a dedupe recall plus a `remember`) are overlapping the next turn's recall.
+- **`phase: "mnemonic"`** — the vault is slow. Usually embedding: a remote `EMBED_PROVIDER` or a cold Ollama model. Compare `searchMs` against `hydrateMs` in `recall complete` to see whether it is the search or the note fetch.
+- **`phase: "connect"`, or `connects` climbing on `/healthz`** — the transport keeps dropping. In spawn mode check `recentStderr` for the child process dying; in remote mode check the HTTP session.
 
 ### Langfuse
 
