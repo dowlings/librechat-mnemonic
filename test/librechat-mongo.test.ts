@@ -110,6 +110,7 @@ const config = {
     commandPrefix: '/memory',
     projectless: 'global',
   },
+  prompt: { datetimeEnabled: true },
   extract: { timeoutMs: 30000 },
   mcp: { enabled: true, path: '/mcp' },
   cache: {

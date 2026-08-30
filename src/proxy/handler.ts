@@ -11,7 +11,14 @@ import type { MemoryContext } from '../memory/types.js';
 import type { Telemetry, Trace } from '../telemetry.js';
 import { adapterFor, collectStreamText, type ChatAdapter, type UsageInfo } from './adapters.js';
 import { parseCommand, runCommand } from './commands.js';
-import { buildMemoryBlock, buildRecallQuery, messageText } from './inject.js';
+import {
+  DATETIME_BLOCK_MARKER,
+  MEMORY_BLOCK_MARKER,
+  buildDateTimeBlock,
+  buildMemoryBlock,
+  buildRecallQuery,
+  messageText,
+} from './inject.js';
 
 /** Headers that must not be relayed. */
 const HOP_BY_HOP = new Set([
@@ -112,6 +119,8 @@ export function createProxyHandler(deps: ProxyDeps) {
       memoryEnabled = setting.enabled;
     }
 
+    const injectDatetime = !!conversationId && config.prompt.datetimeEnabled;
+
     // ── Telemetry: one trace per chat turn, memory on/off, with or without a
     // conversation id ────────────────────────────────────────────────────────
     const trace = telemetry.trace({
@@ -124,10 +133,24 @@ export function createProxyHandler(deps: ProxyDeps) {
         format,
         memoryEnabled,
         hasConversation: !!conversationId,
+        datetimeInjected: injectDatetime,
       },
     });
 
     let outgoing = parsed;
+
+    /*
+     * Datetime goes in first, so it lands ahead of the memory block and the
+     * model reads "now" before it reads anything dated. It is deliberately not
+     * gated on `memoryEnabled` — knowing the date is useful in a chat with
+     * memory turned off — but it is gated on the conversation id for the same
+     * reason recall is: side calls such as title generation must go upstream
+     * exactly as LibreChat built them.
+     */
+    if (injectDatetime) {
+      outgoing = adapter.inject(outgoing, buildDateTimeBlock(new Date()), DATETIME_BLOCK_MARKER);
+    }
+
     let context: MemoryContext | undefined;
     if (conversationId && memoryEnabled) {
       /*
@@ -165,7 +188,7 @@ export function createProxyHandler(deps: ProxyDeps) {
             },
           });
           if (block) {
-            outgoing = adapter.inject(parsed, block);
+            outgoing = adapter.inject(outgoing, block, MEMORY_BLOCK_MARKER);
             logger.debug(
               { conversationId, project: context.projectName, count: recalled.length },
               'injected recalled memories',

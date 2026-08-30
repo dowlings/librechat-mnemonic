@@ -10,6 +10,7 @@ Nothing is forked or patched. This runs as one container alongside LibreChat.
 
 - **Recalls before every turn.** Relevant memories are retrieved and injected as context before the model is called. This does not depend on the model deciding to call a tool.
 - **Writes after every turn.** Durable facts are extracted from the exchange and stored, with duplicates detected and skipped.
+- **Tells the model what time it is.** Every user-facing turn carries the current UTC timestamp and unix time, so "today", "next week", and "is this memory still current?" are answered against the clock instead of the training cutoff.
 - **Scopes by LibreChat project.** A chat in the "Home Network" project reads and writes memories stamped with that project. Memories live in one global vault, partitioned by project, so nothing is siloed unless you want it to be.
 - **Stays out of the way.** `/memory off` in any chat, and that conversation stops recalling and storing.
 - **Caches aggressively.** Note bodies, recall results, and memory settings are cached with configurable TTLs to keep latency low. Cache stats are exposed via `/healthz` and Langfuse span metadata.
@@ -105,6 +106,26 @@ The proxy answers these itself. The model is never called and no tokens are spen
 
 Precedence is per-chat, then per-user, then `MEMORY_DEFAULT_ENABLED`.
 
+## Current date and time
+
+Models have no clock. Left to itself a model dates "today" from its training cutoff, which makes every relative reference wrong and makes it impossible to judge whether a recalled memory is a week or a year old.
+
+So each user-facing turn gets a small system block ahead of the memory block:
+
+```text
+<!-- librechat-mnemonic:datetime -->
+# Current date and time
+
+This turn started at:
+
+- UTC: 2026-08-30T04:05:06Z (Sunday, 30 August 2026)
+- Unix time: 1787040306 (seconds since 1970-01-01T00:00:00Z)
+```
+
+Both representations are there on purpose: ISO-8601 for the model to read and quote, unix seconds for arithmetic that does not require parsing a calendar. It is always UTC — the proxy has no way to know the user's timezone, and a wrong one is worse than an explicit one.
+
+This is independent of memory. It still happens in a chat with `/memory off`. It does **not** happen on LibreChat's side calls (title generation, its own memory agent), which have no conversation id and are forwarded exactly as sent. Set `PROMPT_DATETIME_ENABLED=false` to turn it off.
+
 ## How project scoping works
 
 mnemonic derives project identity from a working directory. Its detection order is the git remote of the enclosing repo, then the git root folder name, then the plain basename of the directory. This uses the third branch: each LibreChat project gets a directory under `MNEMONIC_PROJECT_ROOT`, and its name becomes the mnemonic project.
@@ -190,6 +211,7 @@ mnemonic's own variables (`EMBED_PROVIDER`, `OLLAMA_URL`, `EMBED_MODEL`, `OPENAI
 | `MEMORY_DEDUPE_THRESHOLD` | `0.82` | Recall score above which a candidate is treated as already known |
 | `MEMORY_COMMAND_PREFIX` | `/memory` | Change if it clashes with something |
 | `MEMORY_PROJECTLESS` | `global` | `off` disables memory entirely in chats not assigned to a project |
+| `PROMPT_DATETIME_ENABLED` | `true` | Inject the current UTC and unix time into every user-facing turn |
 
 ### Extraction model
 

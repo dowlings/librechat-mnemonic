@@ -46,6 +46,7 @@ const baseConfig: AppConfig = {
     commandPrefix: '/memory',
     projectless: 'global',
   },
+  prompt: { datetimeEnabled: true },
   extract: {
     timeoutMs: 30000,
   },

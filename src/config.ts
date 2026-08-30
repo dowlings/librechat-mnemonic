@@ -120,6 +120,9 @@ const rawSchema = z.object({
   /** What to do in a chat that is not assigned to a LibreChat project. */
   MEMORY_PROJECTLESS: z.enum(['global', 'off']).optional().default('global'),
 
+  // ── Prompt augmentation (independent of memory) ────────────────────────────
+  PROMPT_DATETIME_ENABLED: bool(true),
+
   // ── Extraction model (falls back to the chat request's own upstream) ───────
   EXTRACT_BASE_URL: z.string().optional(),
   EXTRACT_API_KEY: z.string().optional(),
@@ -193,6 +196,10 @@ export interface AppConfig {
     dedupeThreshold: number;
     commandPrefix: string;
     projectless: 'global' | 'off';
+  };
+  prompt: {
+    /** Inject the current UTC and unix time into every user-facing chat turn. */
+    datetimeEnabled: boolean;
   };
   extract: {
     baseUrl?: string;
@@ -315,6 +322,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       dedupeThreshold: raw.MEMORY_DEDUPE_THRESHOLD,
       commandPrefix: raw.MEMORY_COMMAND_PREFIX,
       projectless: raw.MEMORY_PROJECTLESS,
+    },
+    prompt: {
+      datetimeEnabled: raw.PROMPT_DATETIME_ENABLED,
     },
     extract: {
       baseUrl: raw.EXTRACT_BASE_URL,

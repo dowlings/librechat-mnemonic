@@ -50,6 +50,7 @@ const baseConfig: AppConfig = {
     commandPrefix: '/memory',
     projectless: 'global',
   },
+  prompt: { datetimeEnabled: true },
   extract: { timeoutMs: 30_000 },
   mcp: { enabled: true, path: '/mcp' },
   cache: {
@@ -68,6 +69,13 @@ const baseConfig: AppConfig = {
 interface CallBehaviour {
   /** How long the fake mnemonic takes to answer, per tool. */
   delayMs?: number;
+  /**
+   * Per-invocation delays, consumed in order and falling back to `delayMs`
+   * once exhausted. Needed to make one phase clearly dominate another: with a
+   * single delay a queued call waits about as long as it then runs for, and
+   * which of the two is "slowest" comes down to timer jitter.
+   */
+  delaysMs?: number[];
   /** Thrown instead of answering. */
   fail?: () => unknown;
 }
@@ -82,9 +90,11 @@ function configWith(overrides: Partial<AppConfig['mnemonic']>): AppConfig {
  */
 function createClient(config: AppConfig, behaviour: CallBehaviour = {}) {
   const client = new MnemonicClient(config);
+  const delays = [...(behaviour.delaysMs ?? [])];
   const fakeClient = {
     callTool: vi.fn(async () => {
-      if (behaviour.delayMs) await new Promise((r) => setTimeout(r, behaviour.delayMs));
+      const delayMs = delays.shift() ?? behaviour.delayMs;
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       if (behaviour.fail) throw behaviour.fail();
       return {
         content: [{ type: 'text' as const, text: 'ok' }],
@@ -164,7 +174,9 @@ describe('MnemonicClient — per-call logging', () => {
   });
 
   it('blames the queue when a call spent its time waiting behind another', async () => {
-    const { client } = createClient(baseConfig, { delayMs: 60 });
+    // A slow first call and a fast second one: the second's own round-trip is
+    // negligible, so anything it spent is queue wait and nothing else.
+    const { client } = createClient(baseConfig, { delaysMs: [120, 1] });
 
     await Promise.all([
       client.call('recall', { query: 'a' }),
@@ -179,6 +191,7 @@ describe('MnemonicClient — per-call logging', () => {
     const second = completions.find((detail) => detail.queueDepth === 1);
     expect(second).toBeDefined();
     expect(second!.queueWaitMs as number).toBeGreaterThanOrEqual(50);
+    expect(second!.queueWaitMs as number).toBeGreaterThan(second!.callMs as number);
     expect(second!.phase).toBe('queue');
 
     await client.close();

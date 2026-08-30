@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppConfig } from '../src/config.js';
 import { logger } from '../src/logger.js';
+import { DATETIME_BLOCK_MARKER, MEMORY_BLOCK_MARKER } from '../src/proxy/inject.js';
 import { createApp } from '../src/server.js';
 import type {
   Generation,
@@ -62,6 +63,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       commandPrefix: '/memory',
       projectless: 'global',
     },
+    prompt: { datetimeEnabled: true },
     extract: { timeoutMs: 30000 },
     mcp: { enabled: false, path: '/mcp' },
     cache: {
@@ -405,6 +407,156 @@ describe('proxy handler usage telemetry', () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe('current datetime injection', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  /** Runs one chat turn and hands back the body that actually reached upstream. */
+  async function sendTurn(options: {
+    config?: AppConfig;
+    path?: string;
+    headers?: Record<string, string>;
+    body?: Record<string, unknown>;
+    memorySetting?: { enabled: boolean; source: string };
+    recalled?: unknown[];
+    context?: Record<string, unknown>;
+  }): Promise<{ sent: Record<string, unknown>; traces: TraceOptions[] }> {
+    let sent: Record<string, unknown> = {};
+    globalThis.fetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Promise.resolve(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    }) as unknown as typeof fetch;
+
+    const memory = createMockMemory(
+      vi.fn().mockResolvedValue(
+        options.context ?? {
+          userId: 'user-1',
+          conversationId: 'conv-1',
+          projectName: null,
+          cwd: null,
+        },
+      ),
+    );
+    if (options.recalled) memory.recall = vi.fn().mockResolvedValue(options.recalled);
+
+    const { telemetry, traces } = createRecordingTelemetry();
+    const app = createApp({
+      config: options.config ?? makeConfig(),
+      store: createMockStore(
+        vi.fn().mockResolvedValue(options.memorySetting ?? { enabled: false, source: 'default' }),
+      ) as never,
+      memory: memory as never,
+      telemetry,
+    });
+
+    const { url, close } = await listen(app);
+    try {
+      const res = await originalFetch(`${url}${options.path ?? '/openai/v1/chat/completions'}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-librechat-conversation-id': 'conv-1',
+          'x-librechat-user-id': 'user-1',
+          ...options.headers,
+        },
+        body: JSON.stringify(
+          options.body ?? { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] },
+        ),
+      });
+      expect(res.status).toBe(200);
+      return { sent, traces };
+    } finally {
+      await close();
+    }
+  }
+
+  it('adds a system message carrying UTC and unix time, even with memory off', async () => {
+    const { sent, traces } = await sendTurn({});
+
+    const messages = sent.messages as Array<{ role: string; content: string }>;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.role).toBe('system');
+    expect(messages[0]?.content).toContain(DATETIME_BLOCK_MARKER);
+    expect(messages[0]?.content).toMatch(/UTC: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/);
+    expect(messages[0]?.content).toMatch(/Unix time: \d{10}/);
+    expect(messages[1]).toEqual({ role: 'user', content: 'hi' });
+
+    expect(traces[0]?.metadata).toMatchObject({ datetimeInjected: true, memoryEnabled: false });
+  });
+
+  it('keeps the operator system prompt first', async () => {
+    const { sent } = await sendTurn({
+      body: {
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'operator rules' },
+          { role: 'user', content: 'hi' },
+        ],
+      },
+    });
+
+    const messages = sent.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toBe('operator rules');
+    expect(messages[1]?.content).toContain(DATETIME_BLOCK_MARKER);
+  });
+
+  it('puts the datetime ahead of the memory block, so "now" is read before anything dated', async () => {
+    const config = makeConfig();
+    const { sent } = await sendTurn({
+      config: {
+        ...config,
+        memory: { ...config.memory, recallEnabled: true },
+      },
+      memorySetting: { enabled: true, source: 'default' },
+      recalled: [
+        {
+          id: 'note-1',
+          title: 'The NAS runs NFS v4',
+          score: 0.7,
+          vault: 'main-vault',
+          content: 'Exports live under /mnt.',
+        },
+      ],
+    });
+
+    const contents = (sent.messages as Array<{ content: string }>).map((m) => m.content);
+    expect(contents[0]).toContain(DATETIME_BLOCK_MARKER);
+    expect(contents[1]).toContain(MEMORY_BLOCK_MARKER);
+    expect(contents[2]).toBe('hi');
+  });
+
+  it('uses the top-level system field for the Anthropic wire format', async () => {
+    const { sent } = await sendTurn({
+      path: '/openai/v1/messages',
+      body: { model: 'claude-sonnet-4', messages: [{ role: 'user', content: 'hi' }] },
+    });
+
+    expect(sent.system).toContain(DATETIME_BLOCK_MARKER);
+    expect(sent.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('leaves side calls with no conversation id untouched', async () => {
+    const { sent, traces } = await sendTurn({ headers: { 'x-librechat-conversation-id': '' } });
+
+    expect(sent.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(traces[0]?.metadata).toMatchObject({ datetimeInjected: false });
+  });
+
+  it('injects nothing when PROMPT_DATETIME_ENABLED is off', async () => {
+    const config = makeConfig();
+    const { sent, traces } = await sendTurn({
+      config: { ...config, prompt: { datetimeEnabled: false } },
+    });
+
+    expect(sent.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(traces[0]?.metadata).toMatchObject({ datetimeInjected: false });
   });
 });
 

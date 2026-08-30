@@ -15,8 +15,11 @@ export type WireFormat = 'openai' | 'anthropic';
 export interface ChatAdapter {
   /** Messages used to build the recall query. */
   conversation(body: Record<string, unknown>): SimpleMessage[];
-  /** Return a new body with the memory block added. */
-  inject(body: Record<string, unknown>, block: string): Record<string, unknown>;
+  /**
+   * Return a new body with `block` added to the system prompt. `marker` is the
+   * block's sentinel, used to skip a request that already carries one.
+   */
+  inject(body: Record<string, unknown>, block: string, marker: string): Record<string, unknown>;
   /** Pull the assistant's text out of a non-streaming response. */
   responseText(json: unknown): string;
   /** Pull assistant text out of one parsed SSE data payload. */
@@ -33,12 +36,14 @@ export const openaiAdapter: ChatAdapter = {
     return messages;
   },
 
-  inject(body, block) {
+  inject(body, block, marker) {
     const messages = Array.isArray(body.messages) ? (body.messages as SimpleMessage[]) : [];
-    const next = injectSystemMessage(messages, block, (content) => ({
-      role: 'system',
-      content,
-    }));
+    const next = injectSystemMessage(
+      messages,
+      block,
+      (content) => ({ role: 'system', content }),
+      marker,
+    );
     return { ...body, messages: next };
   },
 
@@ -93,15 +98,16 @@ export const anthropicAdapter: ChatAdapter = {
     return messages;
   },
 
-  inject(body, block) {
+  inject(body, block, marker) {
     const system = body.system;
 
     if (typeof system === 'string') {
-      if (system.includes(block.slice(0, 40))) return body;
+      if (system.includes(marker)) return body;
       return { ...body, system: `${system}\n\n${block}` };
     }
 
     if (Array.isArray(system)) {
+      if (messageText(system).includes(marker)) return body;
       return { ...body, system: [...system, { type: 'text', text: block }] };
     }
 
