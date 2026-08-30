@@ -120,6 +120,30 @@ describe('loadConfig', () => {
     expect(config.cache.maxEntries).toBe(100);
   });
 
+  it('defaults the diagnostics thresholds to a warning at 5s and no stats heartbeat', () => {
+    const config = loadConfig(base as NodeJS.ProcessEnv);
+    expect(config.mnemonic.slowCallMs).toBe(5_000);
+    expect(config.mnemonic.statsIntervalMs).toBe(0);
+  });
+
+  it('parses custom diagnostics thresholds', () => {
+    const config = loadConfig({
+      ...base,
+      MNEMONIC_SLOW_CALL_MS: '1500',
+      MNEMONIC_STATS_INTERVAL_MS: '60000',
+    } as NodeJS.ProcessEnv);
+    expect(config.mnemonic.slowCallMs).toBe(1_500);
+    expect(config.mnemonic.statsIntervalMs).toBe(60_000);
+  });
+
+  it('rejects a slow-call threshold that could never fire', () => {
+    for (const value of ['0', '-1']) {
+      expect(() =>
+        loadConfig({ ...base, MNEMONIC_SLOW_CALL_MS: value } as NodeJS.ProcessEnv),
+      ).toThrow(/positive integer/);
+    }
+  });
+
   it('rejects zero or negative cache TTLs and max entries', () => {
     for (const key of [
       'CACHE_NOTE_BODY_TTL_MS',
