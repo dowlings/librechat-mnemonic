@@ -6,6 +6,10 @@ import {
   collectStreamText,
   openaiAdapter,
 } from '../src/proxy/adapters.js';
+import { MEMORY_BLOCK_MARKER } from '../src/proxy/inject.js';
+
+const MARKER = MEMORY_BLOCK_MARKER;
+const BLOCK = `${MARKER}\nBLOCK`;
 
 describe('openai adapter', () => {
   it('injects a system message after existing system messages', () => {
@@ -16,11 +20,26 @@ describe('openai adapter', () => {
         { role: 'user', content: 'hi' },
       ],
     };
-    const next = openaiAdapter.inject(body, 'BLOCK') as typeof body;
+    const next = openaiAdapter.inject(body, BLOCK, MARKER) as typeof body;
     expect(next.messages.map((m) => m.role)).toEqual(['system', 'system', 'user']);
-    expect(next.messages[1]?.content).toBe('BLOCK');
+    expect(next.messages[1]?.content).toBe(BLOCK);
     // Original untouched.
     expect(body.messages).toHaveLength(2);
+  });
+
+  it('skips a body that already carries the marker', () => {
+    const body = { messages: [{ role: 'system', content: BLOCK }] };
+    const next = openaiAdapter.inject(body, BLOCK, MARKER) as typeof body;
+    expect(next.messages).toHaveLength(1);
+  });
+
+  it('injects a second block with a different marker', () => {
+    const body = { messages: [{ role: 'user', content: 'hi' }] };
+    const once = openaiAdapter.inject(body, BLOCK, MARKER) as typeof body;
+    const twice = openaiAdapter.inject(once, '<!-- other -->\nOTHER', '<!-- other -->') as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(twice.messages.map((m) => m.role)).toEqual(['system', 'system', 'user']);
   });
 
   it('reads the assistant reply from a completion', () => {
@@ -63,24 +82,41 @@ describe('openai adapter', () => {
 
 describe('anthropic adapter', () => {
   it('appends to a string system prompt', () => {
-    const next = anthropicAdapter.inject({ system: 'rules', messages: [] }, 'BLOCK') as {
+    const next = anthropicAdapter.inject({ system: 'rules', messages: [] }, BLOCK, MARKER) as {
       system: string;
     };
-    expect(next.system).toBe('rules\n\nBLOCK');
+    expect(next.system).toBe(`rules\n\n${BLOCK}`);
   });
 
   it('appends a text block to an array system prompt', () => {
     const next = anthropicAdapter.inject(
       { system: [{ type: 'text', text: 'rules' }], messages: [] },
-      'BLOCK',
+      BLOCK,
+      MARKER,
     ) as { system: Array<{ type: string; text: string }> };
     expect(next.system).toHaveLength(2);
-    expect(next.system[1]).toEqual({ type: 'text', text: 'BLOCK' });
+    expect(next.system[1]).toEqual({ type: 'text', text: BLOCK });
   });
 
   it('sets the system prompt when there was none', () => {
-    const next = anthropicAdapter.inject({ messages: [] }, 'BLOCK') as { system: string };
-    expect(next.system).toBe('BLOCK');
+    const next = anthropicAdapter.inject({ messages: [] }, BLOCK, MARKER) as { system: string };
+    expect(next.system).toBe(BLOCK);
+  });
+
+  it('does not append twice, for either system prompt shape', () => {
+    const fromString = anthropicAdapter.inject(
+      { system: `rules\n\n${BLOCK}`, messages: [] },
+      BLOCK,
+      MARKER,
+    ) as { system: string };
+    expect(fromString.system).toBe(`rules\n\n${BLOCK}`);
+
+    const fromArray = anthropicAdapter.inject(
+      { system: [{ type: 'text', text: BLOCK }], messages: [] },
+      BLOCK,
+      MARKER,
+    ) as { system: Array<{ type: string; text: string }> };
+    expect(fromArray.system).toHaveLength(1);
   });
 
   it('reads text out of a messages response', () => {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DATETIME_BLOCK_MARKER,
   MEMORY_BLOCK_MARKER,
+  buildDateTimeBlock,
   buildMemoryBlock,
   buildRecallQuery,
   injectSystemMessage,
@@ -116,6 +118,30 @@ describe('buildMemoryBlock', () => {
   });
 });
 
+describe('buildDateTimeBlock', () => {
+  // 2026-08-30T04:05:06.789Z — a Sunday.
+  const at = new Date(Date.UTC(2026, 7, 30, 4, 5, 6, 789));
+
+  it('carries the marker, ISO UTC, and unix seconds', () => {
+    const block = buildDateTimeBlock(at);
+    expect(block).toContain(DATETIME_BLOCK_MARKER);
+    expect(block).toContain('2026-08-30T04:05:06Z');
+    expect(block).toContain(String(Math.floor(at.getTime() / 1000)));
+  });
+
+  it('drops milliseconds, which the model would only echo back', () => {
+    expect(buildDateTimeBlock(at)).not.toContain('.789');
+  });
+
+  it('spells out the weekday and month so the model does not have to compute them', () => {
+    expect(buildDateTimeBlock(at)).toContain('Sunday, 30 August 2026');
+  });
+
+  it('tells the model to resolve relative dates against it', () => {
+    expect(buildDateTimeBlock(at)).toMatch(/today/i);
+  });
+});
+
 describe('injectSystemMessage', () => {
   const make = (content: string) => ({ role: 'system', content });
 
@@ -124,24 +150,36 @@ describe('injectSystemMessage', () => {
       { role: 'system', content: 'operator rules' },
       { role: 'user', content: 'hi' },
     ];
-    const next = injectSystemMessage(messages, 'BLOCK', make);
+    const next = injectSystemMessage(messages, 'BLOCK', make, MEMORY_BLOCK_MARKER);
     expect(next.map((m) => m.content)).toEqual(['operator rules', 'BLOCK', 'hi']);
   });
 
   it('inserts first when there are no system messages', () => {
-    const next = injectSystemMessage([{ role: 'user', content: 'hi' }], 'BLOCK', make);
+    const next = injectSystemMessage(
+      [{ role: 'user', content: 'hi' }],
+      'BLOCK',
+      make,
+      MEMORY_BLOCK_MARKER,
+    );
     expect(next[0]?.content).toBe('BLOCK');
   });
 
   it('does not inject twice', () => {
     const messages = [{ role: 'system', content: `x ${MEMORY_BLOCK_MARKER} y` }];
-    const next = injectSystemMessage(messages, 'BLOCK', make);
+    const next = injectSystemMessage(messages, 'BLOCK', make, MEMORY_BLOCK_MARKER);
     expect(next).toHaveLength(1);
+  });
+
+  it('dedupes per marker, so one block does not suppress the other', () => {
+    const messages = [{ role: 'system', content: `x ${MEMORY_BLOCK_MARKER} y` }];
+    const next = injectSystemMessage(messages, 'DATE', make, DATETIME_BLOCK_MARKER);
+    expect(next).toHaveLength(2);
+    expect(next[1]?.content).toBe('DATE');
   });
 
   it('does not mutate the caller array', () => {
     const messages = [{ role: 'user', content: 'hi' }];
-    injectSystemMessage(messages, 'BLOCK', make);
+    injectSystemMessage(messages, 'BLOCK', make, MEMORY_BLOCK_MARKER);
     expect(messages).toHaveLength(1);
   });
 });

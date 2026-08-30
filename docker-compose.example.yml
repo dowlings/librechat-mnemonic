@@ -41,6 +41,8 @@ services:
       MEMORY_WRITE_MODE: llm
       MNEMONIC_WRITE_SCOPE: global
       MNEMONIC_RECALL_SCOPE: all
+      # Give the model a clock. Set false to send prompts through untouched.
+      PROMPT_DATETIME_ENABLED: "true"
 
       # ── Caching ───────────────────────────────────────────────────────────
       # Tune these if you need more or less freshness. Defaults are aggressive.

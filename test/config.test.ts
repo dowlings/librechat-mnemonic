@@ -17,6 +17,15 @@ describe('loadConfig', () => {
     expect(config.mnemonic.recallScope).toBe('all');
     expect(config.mnemonic.mode).toBe('spawn');
     expect(config.mcp.enabled).toBe(true);
+    expect(config.prompt.datetimeEnabled).toBe(true);
+  });
+
+  it('lets an operator turn off datetime injection', () => {
+    const config = loadConfig({
+      ...base,
+      PROMPT_DATETIME_ENABLED: 'false',
+    } as NodeJS.ProcessEnv);
+    expect(config.prompt.datetimeEnabled).toBe(false);
   });
 
   it('requires a mongo uri, because project resolution has no other source', () => {

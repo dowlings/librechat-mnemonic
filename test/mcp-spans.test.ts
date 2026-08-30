@@ -58,6 +58,7 @@ const config: AppConfig = {
     commandPrefix: '/memory',
     projectless: 'global',
   },
+  prompt: { datetimeEnabled: true },
   extract: { timeoutMs: 30_000 },
   mcp: { enabled: true, path: '/mcp' },
   cache: {
