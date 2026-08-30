@@ -7,6 +7,9 @@ import type { MemoryContext } from '../memory/types.js';
  */
 export const MEMORY_BLOCK_MARKER = '<!-- librechat-mnemonic:memory -->';
 
+/** The same, for the current-datetime block. Separate so the two dedupe independently. */
+export const DATETIME_BLOCK_MARKER = '<!-- librechat-mnemonic:datetime -->';
+
 /** A provider-agnostic view of one message. */
 export interface SimpleMessage {
   role: string;
@@ -123,16 +126,81 @@ export function buildMemoryBlock(
   return header + parts.join('\n');
 }
 
+const WEEKDAYS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+] as const;
+
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+/**
+ * Render the current moment as a system block.
+ *
+ * Models have no clock, so anything time-relative ("today", "in two weeks",
+ * "is this note still current?") is answered from training data unless the
+ * request carries a timestamp. Both representations are given because they
+ * serve different jobs: ISO-8601 for the model to read and quote, unix seconds
+ * for it to do arithmetic on without parsing a calendar.
+ *
+ * Built from `getUTC*` rather than `Intl`, so the output does not depend on the
+ * container's ICU build or `TZ`.
+ */
+export function buildDateTimeBlock(now: Date = new Date()): string {
+  const iso = now.toISOString();
+  // Second precision: milliseconds are noise the model would only echo back.
+  const utc = `${iso.slice(0, 19)}Z`;
+  const unix = Math.floor(now.getTime() / 1000);
+  const readable = `${WEEKDAYS[now.getUTCDay()]}, ${now.getUTCDate()} ${MONTHS[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
+
+  return [
+    DATETIME_BLOCK_MARKER,
+    '# Current date and time',
+    '',
+    'This turn started at:',
+    '',
+    `- UTC: ${utc} (${readable})`,
+    `- Unix time: ${unix} (seconds since 1970-01-01T00:00:00Z)`,
+    '',
+    'Treat this as the present moment. Resolve "today", "now", "yesterday", "next week"',
+    'and any other relative date against it rather than guessing.',
+    'Dates attached to recalled memories are absolute; compare them to this timestamp to',
+    'judge how old a memory is.',
+  ].join('\n');
+}
+
 /**
  * Insert the block as its own system message, immediately after any leading
  * system messages so the operator's instructions still come first.
+ *
+ * `marker` is the sentinel that identifies this kind of block; a request that
+ * already carries one is left alone. Each block type passes its own, so
+ * injecting memory does not suppress datetime or vice versa.
  */
 export function injectSystemMessage<T extends SimpleMessage>(
   messages: T[],
   block: string,
   makeMessage: (content: string) => T,
+  marker: string,
 ): T[] {
-  if (messages.some((message) => messageText(message.content).includes(MEMORY_BLOCK_MARKER))) {
+  if (messages.some((message) => messageText(message.content).includes(marker))) {
     return messages;
   }
 
