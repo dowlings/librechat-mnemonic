@@ -47,6 +47,8 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       minSimilarity: 0.3,
       timeoutMs: 20000,
       tag: 'librechat',
+      slowCallMs: 5_000,
+      statsIntervalMs: 0,
     },
     memory: {
       defaultEnabled: true,
@@ -402,6 +404,121 @@ describe('proxy handler usage telemetry', () => {
       );
     } finally {
       await close();
+    }
+  });
+});
+
+describe('proxy handler — memory latency logging', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  /** A turn with memory on, so the pre-upstream memory work actually runs. */
+  async function runMemoryTurn(recall: ReturnType<typeof vi.fn>, slowCallMs = 5_000) {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [{ message: { role: 'assistant', content: 'hi' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    ) as unknown as typeof fetch;
+
+    const memory = createMockMemory(
+      vi.fn().mockResolvedValue({
+        userId: 'u1',
+        conversationId: 'c1',
+        projectName: 'proj',
+        cwd: '/projects/proj',
+      }),
+    );
+    memory.recall = recall;
+
+    const base = makeConfig();
+    const { telemetry } = createRecordingTelemetry();
+    const app = createApp({
+      config: makeConfig({
+        memory: { ...base.memory, recallEnabled: true, writeMode: 'off' },
+        mnemonic: { ...base.mnemonic, slowCallMs },
+      }),
+      store: createMockStore(
+        vi.fn().mockResolvedValue({ enabled: true, source: 'default' }),
+      ) as never,
+      memory: memory as never,
+      telemetry,
+    });
+
+    const { url, close } = await listen(app);
+    try {
+      await originalFetch(`${url}/openai/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-librechat-conversation-id': 'c1',
+          'x-librechat-user-id': 'u1',
+        },
+        body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] }),
+      });
+    } finally {
+      await close();
+    }
+  }
+
+  it('logs how much of a turn was spent resolving context and recalling', async () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    try {
+      await runMemoryTurn(vi.fn().mockResolvedValue([]));
+
+      const prelude = debugSpy.mock.calls.find((call) => call[1] === 'memory prelude complete');
+      expect(prelude).toBeDefined();
+      const detail = prelude![0] as Record<string, unknown>;
+      expect(detail).toMatchObject({ conversationId: 'c1', project: 'proj', count: 0 });
+      expect(typeof detail.contextMs).toBe('number');
+      expect(typeof detail.recallMs).toBe('number');
+      expect(detail.totalMs).toBe((detail.contextMs as number) + (detail.recallMs as number));
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  it('warns when memory work delays the turn past the slow-call threshold', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    try {
+      const slowRecall = vi.fn().mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 30));
+        return [];
+      });
+
+      // Waiting 30ms is the cheap way to cross a 10ms threshold; the behaviour
+      // is identical at production's five seconds.
+      await runMemoryTurn(slowRecall, 10);
+
+      const warned = warnSpy.mock.calls.find(
+        (call) => call[1] === 'memory added significant latency to a chat turn',
+      );
+      expect(warned).toBeDefined();
+      expect(warned![0]).toMatchObject({ conversationId: 'c1', project: 'proj' });
+      expect((warned![0] as { totalMs: number }).totalMs).toBeGreaterThanOrEqual(10);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('stays at debug when memory work is fast', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    try {
+      await runMemoryTurn(vi.fn().mockResolvedValue([]));
+
+      expect(
+        warnSpy.mock.calls.some(
+          (call) => call[1] === 'memory added significant latency to a chat turn',
+        ),
+      ).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 });

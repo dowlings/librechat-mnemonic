@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 import type { AppConfig } from '../config.js';
 import { TtlCache } from '../cache.js';
@@ -99,6 +100,8 @@ export class MemoryService {
 
     // Check recall cache — retries and edits produce the same query.
     const cacheKey = `${context.conversationId ?? 'none'}:${scope}:${limit}:${hashString(query)}`;
+    const startedAt = performance.now();
+
     const cached = this.recallCache.get(cacheKey);
     if (cached) {
       logger.debug({ cacheKey, count: cached.length }, 'recall cache hit');
@@ -136,17 +139,29 @@ export class MemoryService {
         metadata: { 'mnemonic.result_count': response?.results?.length ?? 0 },
       });
     } catch (error) {
-      logger.error({ err: error, query: truncate(query, 120) }, 'recall failed');
+      logger.error(
+        {
+          err: error,
+          query: truncate(query, 120),
+          searchMs: Math.round(performance.now() - startedAt),
+        },
+        'recall failed',
+      );
       recallSpan.recordException(error);
       recallSpan.end({ metadata: { status: 'error' } });
       return [];
     }
 
+    const searchMs = Math.round(performance.now() - startedAt);
     const results = response?.results ?? [];
     span.setAttributes({ 'mnemonic.result_count': results.length });
-    if (results.length === 0) return [];
+    if (results.length === 0) {
+      logger.debug({ searchMs, hydrateMs: 0, count: 0, scope: args.scope }, 'recall complete');
+      return [];
+    }
 
     const ids = results.map((r) => r.id);
+    const hydrateStartedAt = performance.now();
     const bodies = await this.getNotes(ids, context);
     const byId = new Map(bodies.map((note) => [note.id, note]));
 
@@ -154,6 +169,18 @@ export class MemoryService {
       ...result,
       content: byId.get(result.id)?.content ?? '',
     }));
+
+    // Recall is two mnemonic round-trips, not one. Splitting them here is what
+    // shows whether the search or the body fetch is the expensive half.
+    logger.debug(
+      {
+        searchMs,
+        hydrateMs: Math.round(performance.now() - hydrateStartedAt),
+        count: hydrated.length,
+        scope: args.scope,
+      },
+      'recall complete',
+    );
 
     this.recallCache.set(cacheKey, hydrated);
     return hydrated;
@@ -400,6 +427,11 @@ export class MemoryService {
       noteBody: this.noteBodyCache.stats,
       recall: this.recallCache.stats,
     };
+  }
+
+  /** Mnemonic call counters, for `/healthz` and the periodic stats log. */
+  get mnemonicStats() {
+    return this.mnemonic.stats;
   }
 }
 

@@ -39,8 +39,26 @@ async function main(): Promise<void> {
     );
   });
 
+  /*
+   * Opt-in heartbeat. The per-call lines only appear at `debug` (or when a call
+   * is slow or fails), which is the right default for a busy proxy — but it
+   * leaves an operator running at `info` with no baseline to compare a bad
+   * period against. This prints one.
+   */
+  let statsTimer: NodeJS.Timeout | undefined;
+  if (config.mnemonic.statsIntervalMs > 0) {
+    statsTimer = setInterval(() => {
+      logger.info(
+        { mnemonic: memory.mnemonicStats, cache: memory.cacheStats },
+        'mnemonic call stats',
+      );
+    }, config.mnemonic.statsIntervalMs);
+    statsTimer.unref();
+  }
+
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
+    if (statsTimer) clearInterval(statsTimer);
     server.close();
     await Promise.allSettled([telemetry.flush(), mnemonic.close(), store.close()]);
     process.exit(0);
