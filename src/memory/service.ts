@@ -429,9 +429,14 @@ export class MemoryService {
     };
   }
 
-  /** Mnemonic call counters, for `/healthz` and the periodic stats log. */
+  /** Lifetime mnemonic call counters, for `/healthz`. */
   get mnemonicStats() {
     return this.mnemonic.stats;
+  }
+
+  /** Mnemonic counters since the last read, for the periodic stats log. Resets them. */
+  takeMnemonicWindowStats() {
+    return this.mnemonic.takeWindowStats();
   }
 }
 

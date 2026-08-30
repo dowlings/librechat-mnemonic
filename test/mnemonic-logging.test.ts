@@ -280,6 +280,46 @@ describe('MnemonicClient — per-call logging', () => {
     await client.close();
   });
 
+  it('does not call a tool error a timeout just because it says "timed out"', async () => {
+    // The likeliest real case: mnemonic is up, its embedding backend is not, and
+    // it answers with an error whose text mentions a timeout. That is mnemonic
+    // rejecting the call, not this service running out of time.
+    const client = new MnemonicClient(baseConfig);
+    (client as unknown as { connect: () => Promise<unknown> }).connect = vi.fn(async () => ({
+      callTool: vi.fn(async () => ({
+        content: [{ type: 'text' as const, text: 'embedding request timed out after 30s' }],
+        isError: true,
+      })),
+    }));
+
+    await expect(client.call('recall', { query: 'a' })).rejects.toThrow(/timed out/);
+
+    expect(lastCall(warnSpy)).toMatchObject({ outcome: 'tool_error', tool: 'recall' });
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(client.stats.tools.recall).toMatchObject({ calls: 1, errors: 1, timeouts: 0 });
+
+    await client.close();
+  });
+
+  it('reports the same in-flight depth from the watchdog and the completion line', async () => {
+    const { client } = createClient(configWith({ slowCallMs: 20 }), { delayMs: 60 });
+
+    await client.call('recall', { query: 'a' });
+
+    const watchdog = warnSpy.mock.calls.find((call) => call[1] === 'mnemonic call still in flight');
+    // The call outran `slowCallMs`, so its completion line is the slow-call warning.
+    const completion = warnSpy.mock.calls.find((call) => call[1] === 'slow mnemonic call');
+    expect(watchdog).toBeDefined();
+    expect(completion).toBeDefined();
+    // One call, nothing else running: both lines describe the same instant, so
+    // the same field must not read 1 on one of them and 0 on the other.
+    const depth = { read: 1, write: 0 };
+    expect((watchdog![0] as Record<string, unknown>).inFlight).toEqual(depth);
+    expect((completion![0] as Record<string, unknown>).inFlight).toEqual(depth);
+
+    await client.close();
+  });
+
   it('reports a call that never reached mnemonic as pure queue time', async () => {
     const client = new MnemonicClient(baseConfig);
     (client as unknown as { connect: () => Promise<unknown> }).connect = vi.fn(async () => {
@@ -330,6 +370,43 @@ describe('MnemonicClient — stats', () => {
 
     await client.close();
     await failing.close();
+  });
+
+  it('reports window counters only for the period since the last read', async () => {
+    const { client } = createClient(baseConfig, { delayMs: 2 });
+
+    await client.call('recall', { query: 'a' });
+    await client.call('recall', { query: 'b' });
+
+    const first = client.takeWindowStats();
+    expect(first.tools.recall).toMatchObject({ calls: 2 });
+    expect(first.windowMs).toBeGreaterThanOrEqual(0);
+
+    // Nothing happened since, so the next window is empty — a quiet minute has
+    // to look quiet, not like the busy one before it.
+    expect(client.takeWindowStats().tools).toEqual({});
+
+    await client.call('recall', { query: 'c' });
+    expect(client.takeWindowStats().tools.recall).toMatchObject({ calls: 1 });
+    // Lifetime totals on `/healthz` are untouched by any of that.
+    expect(client.stats.tools.recall).toMatchObject({ calls: 3 });
+
+    await client.close();
+  });
+
+  it('does not carry a window maximum into the next window', async () => {
+    // A slow call, then a fast one: the lifetime `maxMs` stays pinned at the
+    // slow one for good, which is what makes it useless as a heartbeat signal.
+    const { client } = createClient(baseConfig, { delaysMs: [120, 0] });
+
+    await client.call('recall', {});
+    expect(client.takeWindowStats().tools.recall!.maxMs).toBeGreaterThanOrEqual(100);
+
+    await client.call('recall', {});
+    expect(client.takeWindowStats().tools.recall!.maxMs).toBeLessThan(100);
+    expect(client.stats.tools.recall!.maxMs).toBeGreaterThanOrEqual(100);
+
+    await client.close();
   });
 
   it('records the worst queue wait a tool has seen', async () => {

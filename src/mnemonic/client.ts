@@ -25,6 +25,23 @@ export interface ToolStats {
   maxQueueWaitMs: number;
 }
 
+/**
+ * Counters for the period since they were last read, for the periodic
+ * heartbeat. The lifetime totals on `/healthz` are the right answer to "how is
+ * this instance doing", but the wrong one for "is it bad *right now*": a spike
+ * is a small change in a growing average, and a lifetime `maxMs` stays pinned
+ * at the worst call since boot. These reset on every read, so each heartbeat
+ * line describes only the period it covers.
+ */
+export interface MnemonicWindowStats {
+  /** How long this window covers — the gap since the previous read. */
+  windowMs: number;
+  connects: number;
+  transportErrors: number;
+  inFlight: Record<QueueName, number>;
+  tools: Record<string, ToolStats>;
+}
+
 export interface MnemonicStats {
   connected: boolean;
   /** Connection attempts that succeeded. >1 means the connection was re-established. */
@@ -91,13 +108,38 @@ function emptyToolStats(): ToolStats {
   return { calls: 0, errors: 0, timeouts: 0, totalMs: 0, maxMs: 0, maxQueueWaitMs: 0 };
 }
 
+/** Fold one finished call into a counter set. Used for both the lifetime and window totals. */
+function accumulate(
+  into: Map<string, ToolStats>,
+  tool: string,
+  timing: CallTiming,
+  outcome: CallOutcome,
+): void {
+  const stats = into.get(tool) ?? emptyToolStats();
+  stats.calls += 1;
+  stats.totalMs += timing.totalMs;
+  stats.maxMs = Math.max(stats.maxMs, timing.totalMs);
+  stats.maxQueueWaitMs = Math.max(stats.maxQueueWaitMs, timing.queueWaitMs);
+  if (outcome !== 'ok') stats.errors += 1;
+  if (outcome === 'timeout') stats.timeouts += 1;
+  into.set(tool, stats);
+}
+
 /**
  * A failed call is one of four different problems. Naming which one in the log
  * line is the difference between "memory is broken again" and a diagnosis.
  */
 function classifyOutcome(error: unknown): CallOutcome {
-  if (isMnemonicTimeout(error)) return 'timeout';
+  /*
+   * Order matters. A `MnemonicToolError` means mnemonic answered and rejected
+   * the call, whatever its text says — and its message embeds mnemonic's own
+   * error text, which for a slow embedding backend routinely contains "timed
+   * out". Checking `isMnemonicTimeout` first would file that as a timeout, at
+   * `error` level and in `stats.timeouts`, which is exactly the confusion this
+   * classification exists to remove.
+   */
   if (error instanceof MnemonicToolError) return 'tool_error';
+  if (isMnemonicTimeout(error)) return 'timeout';
   const message = error instanceof Error ? error.message : '';
   if (/circuit open|unavailable/i.test(message)) return 'unavailable';
   return 'error';
@@ -145,6 +187,14 @@ export class MnemonicClient {
   private connects = 0;
   private transportErrors = 0;
   private readonly toolStats = new Map<string, ToolStats>();
+
+  // The same counters again, reset every time the heartbeat reads them, so a
+  // bad minute shows up as a bad minute rather than as a nudge to a lifetime
+  // average. See `MnemonicWindowStats`.
+  private windowConnects = 0;
+  private windowTransportErrors = 0;
+  private windowStartedAt = Date.now();
+  private windowToolStats = new Map<string, ToolStats>();
 
   /**
    * The last few lines mnemonic wrote to stderr. They are logged at `debug`
@@ -209,6 +259,7 @@ export class MnemonicClient {
          */
         transport.onerror = (error) => {
           this.transportErrors += 1;
+          this.windowTransportErrors += 1;
           logger.error(
             {
               err: error,
@@ -248,6 +299,7 @@ export class MnemonicClient {
 
       this.client = client;
       this.connects += 1;
+      this.windowConnects += 1;
       this.breakerOpenUntil = 0;
       return client;
     })();
@@ -418,21 +470,23 @@ export class MnemonicClient {
     outcome: CallOutcome,
     error?: unknown,
   ): void {
-    const stats = this.toolStats.get(identity.tool) ?? emptyToolStats();
-    stats.calls += 1;
-    stats.totalMs += timing.totalMs;
-    stats.maxMs = Math.max(stats.maxMs, timing.totalMs);
-    stats.maxQueueWaitMs = Math.max(stats.maxQueueWaitMs, timing.queueWaitMs);
-    if (outcome !== 'ok') stats.errors += 1;
-    if (outcome === 'timeout') stats.timeouts += 1;
-    this.toolStats.set(identity.tool, stats);
+    accumulate(this.toolStats, identity.tool, timing, outcome);
+    accumulate(this.windowToolStats, identity.tool, timing, outcome);
 
-    // This call is still counted in `inFlight` until `call()`'s finally block
-    // runs; report what else was going on, not including itself.
-    const inFlight = { ...this.inFlight };
-    inFlight[identity.queue] -= 1;
-
-    const detail = { ...identity, ...timing, outcome, phase: slowestPhase(timing), inFlight };
+    /*
+     * `inFlight` means the same thing on every line that carries it: the live
+     * per-queue depth at the instant the line was written, this call included
+     * (`call()`'s finally block has not run yet). The watchdog logs it the same
+     * way, so a lone stuck call reads `{read: 1}` in both places rather than
+     * `1` from one line and `0` from the other.
+     */
+    const detail = {
+      ...identity,
+      ...timing,
+      outcome,
+      phase: slowestPhase(timing),
+      inFlight: { ...this.inFlight },
+    };
 
     if (outcome === 'timeout') {
       logger.error(
@@ -465,6 +519,30 @@ export class MnemonicClient {
       slowCallMs: this.config.mnemonic.slowCallMs,
       tools: Object.fromEntries([...this.toolStats].map(([tool, stat]) => [tool, { ...stat }])),
     };
+  }
+
+  /**
+   * Counters since this was last called, then reset. Reading is destructive on
+   * purpose: the heartbeat is the only caller, and a window that overlapped the
+   * previous one would reintroduce exactly the smearing it exists to avoid.
+   * `/healthz` keeps the lifetime totals.
+   */
+  takeWindowStats(): MnemonicWindowStats {
+    const now = Date.now();
+    const window: MnemonicWindowStats = {
+      windowMs: now - this.windowStartedAt,
+      connects: this.windowConnects,
+      transportErrors: this.windowTransportErrors,
+      inFlight: { ...this.inFlight },
+      tools: Object.fromEntries(
+        [...this.windowToolStats].map(([tool, stat]) => [tool, { ...stat }]),
+      ),
+    };
+    this.windowStartedAt = now;
+    this.windowConnects = 0;
+    this.windowTransportErrors = 0;
+    this.windowToolStats = new Map();
+    return window;
   }
 
   /**

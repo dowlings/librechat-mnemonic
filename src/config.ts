@@ -104,7 +104,10 @@ const rawSchema = z.object({
    * to timing out is visible long before it gets there.
    */
   MNEMONIC_SLOW_CALL_MS: positiveInt(5_000),
-  /** Periodic mnemonic call-stats summary at `info`. 0 disables it. */
+  /**
+   * Periodic mnemonic call-stats summary at `info`, covering the interval just
+   * elapsed as well as the lifetime totals. 0 disables it.
+   */
   MNEMONIC_STATS_INTERVAL_MS: int(0),
 
   // ── Behaviour ──────────────────────────────────────────────────────────────

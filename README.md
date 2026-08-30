@@ -333,7 +333,8 @@ Every mnemonic call is logged with a phase breakdown, so a timeout is attributab
 | `connectMs` | MCP connection setup. Near zero when the connection is reused; large means the transport is the problem. |
 | `callMs` | The mnemonic round-trip itself: embedding, vector search, git commit. This is what `MNEMONIC_TIMEOUT_MS` bounds. |
 | `phase` | Whichever of the three consumed the most time — the one-word diagnosis. |
-| `outcome` | `ok`, `timeout`, `tool_error` (mnemonic rejected the call), `unavailable` (circuit breaker open), or `error`. |
+| `inFlight` | Live per-queue depth when the line was written, this call included — the same meaning on every line that carries it. |
+| `outcome` | `ok`, `timeout`, `tool_error` (mnemonic rejected the call), `unavailable` (circuit breaker open), or `error`. A tool error is mnemonic answering, so it stays a `tool_error` even when its text says "timed out". |
 | `recentStderr` | The last few lines mnemonic wrote to stderr, attached to timeouts and connection failures because that is usually where the explanation is. |
 
 Levels are chosen so the useful lines survive `LOG_LEVEL=info`:
@@ -349,7 +350,10 @@ Levels are chosen so the useful lines survive `LOG_LEVEL=info`:
 | `debug` | `recall complete` | Recall's two round-trips split into `searchMs` and `hydrateMs` |
 | `debug` | `post-turn memory write complete` | Detached write: `extractMs`, `saveMs` |
 
-Set `LOG_LEVEL=debug` for the per-call lines, or `MNEMONIC_STATS_INTERVAL_MS=60000` for a once-a-minute summary at `info` without the volume.
+Set `LOG_LEVEL=debug` for the per-call lines, or `MNEMONIC_STATS_INTERVAL_MS=60000` for a once-a-minute summary at `info` without the volume. That summary carries two views:
+
+- `window` — counters for the interval just elapsed, reset each time it prints. This is the one to watch: a bad minute has its own `calls`/`timeouts`/`maxMs`, rather than nudging a lifetime average.
+- `lifetime` — the same cumulative totals `/healthz` serves, kept alongside as the baseline to compare the window against.
 
 Reading the result:
 
