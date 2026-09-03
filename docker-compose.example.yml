@@ -82,7 +82,7 @@ services:
   # Local embeddings for mnemonic. Skip this and set EMBED_PROVIDER=openai or
   # gemini if you would rather not run a model locally.
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama@sha256:020e4134285e2ef4d8fd801234176de3b4faadc992a3eb06c8e66a2f9d4c4ba2
     container_name: librechat-mnemonic-ollama
     restart: unless-stopped
     volumes:
