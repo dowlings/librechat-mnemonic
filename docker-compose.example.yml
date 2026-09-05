@@ -134,7 +134,7 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
       LANGFUSE_HOST: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
     volumes:
-      - ./litellm-config.yaml:/app/config.yaml:ro
+      - ./examples/litellm-config.yaml:/app/config.yaml:ro
     networks:
       - librechat-network
     # No published port. mnemonic reaches it over the docker network, and the
