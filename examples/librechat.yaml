@@ -46,6 +46,30 @@ endpoints:
         x-librechat-user-id: '{{LIBRECHAT_USER_ID}}'
         x-librechat-conversation-id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
 
+    # ── Tiers, through the proxy and then LiteLLM ───────────────────────────
+    # Optional. Only add this if you run the LiteLLM service from
+    # docker-compose.example.yml. `basic`, `standard` and `advanced` are model
+    # groups, each backed by an ordered list of providers that LiteLLM fails
+    # over between. Bind an agent to `advanced` once and stop editing it when a
+    # provider runs out of credit.
+    - name: 'Mnemonic'
+      # A placeholder. The field is mandatory, but the proxy replaces whatever
+      # LibreChat sends with the `apiKey` from its own UPSTREAMS entry, and the
+      # real provider credentials live in LiteLLM. This is not an auth bug.
+      apiKey: 'not-needed'
+      baseURL: 'http://librechat-mnemonic:8710/litellm/v1'
+      models:
+        # `fetch: true` works: non-chat requests fall through the proxy
+        # untouched, so GET /litellm/v1/models reaches LiteLLM and returns the
+        # model groups.
+        default: ['basic', 'standard', 'advanced']
+        fetch: true
+      titleConvo: true
+      titleModel: 'basic'
+      headers:
+        x-librechat-user-id: '{{LIBRECHAT_USER_ID}}'
+        x-librechat-conversation-id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
+
 mcpServers:
   mnemonic:
     type: streamable-http

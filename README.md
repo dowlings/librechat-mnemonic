@@ -264,6 +264,30 @@ When either key is missing, telemetry is a no-op with zero overhead.
 | `MCP_ENABLED` | `true` | Serve the MCP endpoint |
 | `MCP_PATH` | `/mcp` | Where to serve it |
 
+## Tiered models and failover
+
+Optional, and no code in this service is involved. If you want `basic` / `standard` / `advanced` to behave as models that fall back to another provider when the first one runs out of credit, put [LiteLLM](https://github.com/BerriAI/litellm) behind this proxy:
+
+```text
+LibreChat  ->  librechat-mnemonic  ->  LiteLLM  ->  Ollama / OpenAI / Gemini
+```
+
+LiteLLM speaks OpenAI format on `/v1/chat/completions`, so it is an ordinary `UPSTREAMS` entry. See `examples/litellm-config.yaml`, the optional services in `docker-compose.example.yml`, and the `Mnemonic` endpoint in `examples/librechat.yaml`.
+
+**The order matters.** mnemonic in front means memory recall and injection happen exactly once per turn and LiteLLM is just an upstream that happens to be several providers. LiteLLM in front would need one mnemonic route per provider, and every failover attempt would re-enter memory injection.
+
+Because LibreChat agents bind to `{endpoint, model}`, failover at the model layer is invisible to the agent. Point an agent at `advanced` once and you never edit it again when a provider runs dry.
+
+Things that bite, in rough order of how much:
+
+- **Every model in a group must support tool calling.** Agents send `tools` on every request. A target without function calling does not degrade the reply, it breaks the agent, and nothing warns you.
+- **Pin `EXTRACT_BASE_URL` / `EXTRACT_MODEL` / `EXTRACT_API_KEY`.** Left unset, extraction reuses the chat's own upstream and model, which under a tier resolves to LiteLLM with the tier name as the model — memory extraction then inherits your failover chain and can run on the expensive fallback.
+- **Failover only works before the first byte.** Auth, quota, rate-limit and connection failures arrive in the response status, so the common cases are covered. A provider that dies mid-stream loses the turn; nothing downstream can recover it.
+- **Credentials live in LiteLLM.** LibreChat sends one API key per endpoint, but a tier spans providers, so the inbound credential is meaningless. `apiKey: 'not-needed'` in `librechat.yaml` is a placeholder; the proxy replaces it with the `apiKey` from its `UPSTREAMS` entry, which should be a scoped LiteLLM virtual key, never the master key.
+- **LiteLLM budgets track its own spend, not your remaining provider quota.** They cannot see an OpenAI credit balance or a subscription allowance. Their real value is the other direction: a cap on the paid target, so a stopped Ollama cannot silently drain it.
+- **`/healthz` knows nothing about tiers.** Circuit state lives in LiteLLM's own `/health`, and traces land as two sibling generations in Langfuse rather than nested — they correlate by session id.
+- **The admin UI needs Postgres.** Without a database LiteLLM is config-file only, with no UI and no budgets. Logging in as `admin` with `LITELLM_MASTER_KEY` is the default; setting `UI_USERNAME` / `UI_PASSWORD` costs nothing and keeps the root credential out of a browser form.
+
 ## Monitoring
 
 ### `/healthz`
@@ -422,6 +446,7 @@ Worth knowing before you rely on it.
 - **Multi-user installs share memory by project name.** There is no per-user partition in the vault. Fine for a personal or small-team instance, wrong for a multi-tenant one.
 - **Automatic extraction is a judgement call made by a model.** It will sometimes store something you would not have, and miss something you would. `MEMORY_WRITE_MODE=explicit` trades recall for precision.
 - **Tool-calling turns are passed through untouched.** Memory is injected on the request and extracted from the final text, so intermediate tool rounds are not analysed separately.
+- **Nothing can fail over mid-stream.** Once an upstream has responded and the status and headers are relayed, the proxy is committed: a provider that dies after the first byte loses the turn. This is true of any failover layer behind the proxy, including LiteLLM.
 - **Cache TTLs trade freshness for latency.** If you change a memory via the MCP tools or another mnemonic client, the proxy may serve stale cached results for up to the TTL. The defaults are conservative; lower them if you need faster consistency.
 
 ## Images and releases

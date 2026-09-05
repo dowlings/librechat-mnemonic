@@ -1,0 +1,108 @@
+# LiteLLM proxy config for tiered models with ordered failover.
+#
+# The chain is:
+#
+#   LibreChat  ->  librechat-mnemonic  ->  LiteLLM  ->  Ollama / OpenAI / Gemini
+#
+# mnemonic sits in FRONT of LiteLLM on purpose: memory recall and injection then
+# happen exactly once per turn, and LiteLLM is just "an upstream that happens to
+# be several providers". Put LiteLLM in front instead and every failover attempt
+# re-enters memory injection.
+#
+# LiteLLM is a separate container with its own config surface, so this file is
+# not a violation of the "no config files" rule in AGENTS.md — librechat-mnemonic
+# itself stays environment-driven.
+#
+# Everything below is a starting point. Model names, budgets and cooldowns are
+# yours to tune. Check the LiteLLM docs for the current spelling of any field
+# marked "verify".
+
+model_list:
+  # ── advanced ──────────────────────────────────────────────────────────────
+  # Deployments sharing a `model_name` form a group. The router tries them in
+  # order and moves to the next one when a request fails, so "Ollama ran out"
+  # becomes "the turn was answered by GPT-5" instead of an error in the chat.
+  #
+  # Every model in a group must support tool calling. LibreChat agents send
+  # `tools` on every request; a target without function calling does not degrade
+  # the reply, it breaks the agent, and nothing warns you.
+  - model_name: advanced
+    litellm_params:
+      # The `openai/` prefix keeps this on the OpenAI wire format, which is the
+      # format mnemonic speaks. Ollama exposes an OpenAI-compatible API at /v1.
+      model: openai/glm-4.6
+      api_base: http://ollama:11434/v1
+      api_key: none
+
+  - model_name: advanced
+    litellm_params:
+      model: openai/gpt-5
+      api_key: os.environ/OPENAI_API_KEY
+      # A spend cap on the PAID target is the point of running the database.
+      # Without it, a stopped Ollama silently drains a paid provider for as long
+      # as it stays down. Verify the current field name against the LiteLLM docs
+      # before relying on it; per-key budgets (set in the UI) always work.
+      # max_budget: 20
+      # budget_duration: 30d
+
+  - model_name: advanced
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ── standard ──────────────────────────────────────────────────────────────
+  - model_name: standard
+    litellm_params:
+      model: openai/qwen3:14b
+      api_base: http://ollama:11434/v1
+      api_key: none
+
+  - model_name: standard
+    litellm_params:
+      model: openai/gpt-5-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ── basic ─────────────────────────────────────────────────────────────────
+  - model_name: basic
+    litellm_params:
+      model: openai/llama3.2:3b
+      api_base: http://ollama:11434/v1
+      api_key: none
+
+  - model_name: basic
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ── extraction ────────────────────────────────────────────────────────────
+  # Pin EXTRACT_MODEL to this group. If EXTRACT_* is left unset, mnemonic reuses
+  # the chat's own upstream and model, which under a tier means memory
+  # extraction inherits the failover chain and can quietly run on GPT-5.
+  - model_name: extract-cheap
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  # Retry the next deployment in the group on failure. This is the failover.
+  num_retries: 2
+  # Take a deployment out of rotation after this many failures, for
+  # `cooldown_time` seconds. Without it a stopped Ollama costs a full connect
+  # timeout on every single turn.
+  allowed_fails: 2
+  cooldown_time: 60
+  # Optional: degrade a whole tier to the one below it once its group is
+  # exhausted. Drop this if you would rather see the error.
+  fallbacks:
+    - advanced: ["standard"]
+    - standard: ["basic"]
+
+litellm_settings:
+  # Point at the same Langfuse project and environment LibreChat and mnemonic
+  # use, so traces correlate by session id (the conversation id).
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
