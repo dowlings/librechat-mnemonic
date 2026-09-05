@@ -20,10 +20,15 @@ services:
       # ── Providers this proxy sits in front of ─────────────────────────────
       # `baseUrl` is the provider root: <baseUrl>/v1/chat/completions must be
       # valid for api=openai, and <baseUrl>/v1/messages for api=anthropic.
+      # The `litellm` entry is only needed if you run the optional LiteLLM
+      # service below. It is an ordinary upstream — LiteLLM speaks OpenAI format
+      # on the same path — but it resolves a tier name such as `advanced` to an
+      # ordered list of real providers. See the "Tiered models" README section.
       UPSTREAMS: >-
         [
           {"name":"openai","baseUrl":"https://api.openai.com","api":"openai"},
-          {"name":"anthropic","baseUrl":"https://api.anthropic.com","api":"anthropic"}
+          {"name":"anthropic","baseUrl":"https://api.anthropic.com","api":"anthropic"},
+          {"name":"litellm","baseUrl":"http://litellm:4000","api":"openai","apiKey":"${LITELLM_VIRTUAL_KEY}"}
         ]
 
       # ── mnemonic ──────────────────────────────────────────────────────────
@@ -52,6 +57,11 @@ services:
 
       # A small, cheap model does the extraction. Omit to reuse the chat's own
       # model, which works but costs more.
+      #
+      # If you use the LiteLLM tiers below, pin these explicitly. Left unset,
+      # extraction reuses the chat's upstream and model — which under a tier
+      # means it inherits the failover chain and can quietly run on the
+      # expensive fallback.
       EXTRACT_BASE_URL: https://api.openai.com/v1
       EXTRACT_MODEL: gpt-4o-mini
       EXTRACT_API_KEY: ${OPENAI_API_KEY}
@@ -90,10 +100,79 @@ services:
     networks:
       - librechat-network
 
+  # ── Optional: tiered models with ordered failover ───────────────────────────
+  # Drop these two services if you do not need failover. Nothing else in this
+  # file depends on them.
+  #
+  # LiteLLM turns `basic` / `standard` / `advanced` into models backed by an
+  # ordered list of real providers, so a LibreChat agent bound to `advanced`
+  # keeps working when the first provider runs out of credit. mnemonic stays in
+  # front, so memory injection happens once per turn regardless of which
+  # provider answers. See examples/litellm-config.yaml.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    restart: unless-stopped
+    depends_on:
+      - litellm-db
+    command: ["--config", "/app/config.yaml"]
+    environment:
+      # Root credential. Must start with `sk-`. It grants unlimited spend and
+      # full API access, so keep it out of every other service: mint a scoped
+      # virtual key in the UI and put that in UPSTREAMS above.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD}@litellm-db:5432/litellm
+      # Lets you add and edit models from the admin UI instead of this file.
+      # Database models and config.yaml models coexist; pick one as the source
+      # of truth or you will confuse yourself.
+      STORE_MODEL_IN_DB: "True"
+      # Provider credentials live here, not in LibreChat.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # Same Langfuse project and environment as LibreChat and mnemonic.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_HOST: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    networks:
+      - librechat-network
+    # No published port. mnemonic reaches it over the docker network, and the
+    # admin UI is reached through your existing cloudflared container — add an
+    # ingress rule for a new hostname pointing at http://litellm:4000 and put
+    # your existing Cloudflare Access policy on the WHOLE hostname.
+    #
+    # Do not carve /v1/* out of the Access policy to "make the API work from
+    # outside": that publishes the proxy API to the internet with nothing but a
+    # virtual key in front of it. Use an Access service token instead.
+    expose:
+      - "4000"
+
+  # LiteLLM needs Postgres for the admin UI, virtual keys and the spend ledger.
+  # Budgets are the reason the database is here; without it LiteLLM is
+  # config-file only and has neither UI nor budgets.
+  #
+  # If your LibreChat stack already runs the RAG API's pgvector container, you
+  # can point DATABASE_URL at that instance instead — use a separate database
+  # name, since LiteLLM runs its own Prisma migrations.
+  litellm-db:
+    image: postgres:17-alpine
+    container_name: litellm-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks:
+      - librechat-network
+
 volumes:
   mnemonic-vault:
   mnemonic-projects:
   ollama-data:
+  litellm-db-data:
 
 networks:
   librechat-network:
