@@ -15,7 +15,7 @@ jobs:
       issues: write
       pull-requests: write
       id-token: write
-    uses: dowlings/_org-management/.github/workflows/claude-mention.yml@main
+    uses: dowlings/_org-management/.github/workflows/claude-mention.yml@12a329a4cf1798c1ae20d573893999d98e955ba7 # main
     with:
       repository-guidance: |
         This is a private, single-user repository for one actively maintained NAS.

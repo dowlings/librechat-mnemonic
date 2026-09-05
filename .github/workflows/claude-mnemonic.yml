@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   claude:
-    uses: dowlings/_org-management/.github/workflows/claude-mnemonic.yml@main
+    uses: dowlings/_org-management/.github/workflows/claude-mnemonic.yml@12a329a4cf1798c1ae20d573893999d98e955ba7 # main
     with:
       mode: ${{ inputs.mode }}
       prompt: ${{ inputs.prompt }}
