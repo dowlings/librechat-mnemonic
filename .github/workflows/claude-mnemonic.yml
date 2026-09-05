@@ -1,0 +1,47 @@
+name: Claude Mnemonic
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What Claude should do
+        required: true
+        type: choice
+        options:
+          - investigate-and-create-issue
+          - implement-and-pr
+      prompt:
+        description: Investigation request or implementation guidance
+        required: true
+        type: string
+      issue-number:
+        description: Issue number (required for implement-and-pr)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  claude:
+    uses: dowlings/_org-management/.github/workflows/claude-mnemonic.yml@main
+    with:
+      mode: ${{ inputs.mode }}
+      prompt: ${{ inputs.prompt }}
+      issue-number: ${{ inputs.issue-number }}
+      repository-guidance: |
+        This is a private, single-user repository for one actively maintained NAS.
+        Deployments are manual through Dockhand and are not triggered by merges.
+        Optimize for preventing realistic operational failures with low ongoing
+        maintenance overhead. Prefer simple repository-local checks and direct
+        fixes over generalized frameworks or enterprise-scale abstractions.
+        Host-specific paths and configuration are expected when intentional and
+        documented; do not treat portability as a goal by itself. Be robust where
+        failure could disrupt the NAS, expose secrets, lose data, or make recovery
+        difficult, but avoid exhaustive handling of hypothetical future cases.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
